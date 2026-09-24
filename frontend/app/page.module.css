@@ -14,3 +14,8 @@
   gap: 1rem;
   text-align: center;
 }
+
+.nav {
+  display: flex;
+  gap: 1.25rem;
+}

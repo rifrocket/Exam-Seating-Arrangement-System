@@ -59,14 +59,20 @@ class RegistrationModel(Base):
 
 class ExamModel(Base):
     __tablename__ = "exams"
+    __table_args__ = (
+        UniqueConstraint("course_id", "exam_date", "time_slot", name="uq_exam_course_date_time"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     course_id: Mapped[int] = mapped_column(ForeignKey("courses.id"), index=True)
     exam_date: Mapped[date] = mapped_column(Date)
     time_slot: Mapped[str] = mapped_column(String(32))
+    expected_student_count: Mapped[int] = mapped_column(Integer)
+    day_label: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     course: Mapped["CourseModel"] = relationship(back_populates="exams")
     seating_generations: Mapped[list["SeatingGenerationModel"]] = relationship(back_populates="exam")
+    exam_rooms: Mapped[list["ExamRoomModel"]] = relationship(back_populates="exam")
 
 
 class RoomModel(Base):
@@ -75,6 +81,21 @@ class RoomModel(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     code: Mapped[str] = mapped_column(String(32), unique=True, index=True)
     capacity: Mapped[int] = mapped_column(Integer)
+
+    exam_rooms: Mapped[list["ExamRoomModel"]] = relationship(back_populates="room")
+
+
+class ExamRoomModel(Base):
+    __tablename__ = "exam_rooms"
+    __table_args__ = (UniqueConstraint("exam_id", "room_id", name="uq_exam_room_exam_room"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    exam_id: Mapped[int] = mapped_column(ForeignKey("exams.id"), index=True)
+    room_id: Mapped[int] = mapped_column(ForeignKey("rooms.id"), index=True)
+    allocated_students: Mapped[int] = mapped_column(Integer)
+
+    exam: Mapped["ExamModel"] = relationship(back_populates="exam_rooms")
+    room: Mapped["RoomModel"] = relationship(back_populates="exam_rooms")
 
 
 class SeatingGenerationModel(Base):

@@ -9,6 +9,7 @@ package doesn't outgrow what's actually used.
 from app.repositories.base import Repository
 from app.repositories.course_repository import CourseRepository
 from app.repositories.exam_repository import ExamRepository
+from app.repositories.exam_room_repository import ExamRoomRepository
 from app.repositories.registration_repository import RegistrationRepository
 from app.repositories.room_repository import RoomRepository
 from app.repositories.seat_assignment_repository import SeatAssignmentRepository
@@ -18,6 +19,7 @@ from app.repositories.student_repository import StudentRepository
 __all__ = [
     "CourseRepository",
     "ExamRepository",
+    "ExamRoomRepository",
     "RegistrationRepository",
     "Repository",
     "RoomRepository",

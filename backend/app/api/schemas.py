@@ -5,6 +5,8 @@ service result types but never replace them — services and repositories
 never import from this module.
 """
 
+from datetime import date
+
 from pydantic import BaseModel
 
 
@@ -20,6 +22,12 @@ class ConflictOut(BaseModel):
     line_number: int
     existing_value: str
     incoming_value: str
+
+
+class WarningOut(BaseModel):
+    kind: str
+    line_number: int | None
+    message: str
 
 
 class RegistrationImportResponse(BaseModel):
@@ -73,3 +81,74 @@ class CourseListResponse(BaseModel):
 class RegistrationListResponse(BaseModel):
     items: list[RegistrationOut]
     meta: PageMeta
+
+
+class RoomOut(BaseModel):
+    id: int
+    code: str
+    capacity: int
+
+
+class RoomListResponse(BaseModel):
+    items: list[RoomOut]
+    meta: PageMeta
+
+
+class RoomImportResponse(BaseModel):
+    status: str
+    rows_read: int
+    rooms_created: int
+    rooms_existing: int
+    duplicate_rows: int
+    validation_errors: list[ValidationErrorOut]
+    conflicts: list[ConflictOut]
+
+
+class ScheduleImportResponse(BaseModel):
+    status: str
+    rows_read: int
+    exams_created: int
+    exams_existing: int
+    exam_rooms_created: int
+    exam_rooms_existing: int
+    duplicate_rows: int
+    validation_errors: list[ValidationErrorOut]
+    conflicts: list[ConflictOut]
+    warnings: list[WarningOut]
+
+
+class ExamRoomOut(BaseModel):
+    id: int
+    room_id: int
+    room_code: str
+    room_capacity: int
+    allocated_students: int
+
+
+class ExamOut(BaseModel):
+    id: int
+    course_id: int
+    course_code: str
+    course_name: str
+    exam_date: date
+    time_slot: str
+    day_label: str | None
+    expected_student_count: int
+    room_count: int
+
+
+class ExamListResponse(BaseModel):
+    items: list[ExamOut]
+    meta: PageMeta
+
+
+class ExamDetailOut(BaseModel):
+    id: int
+    course_id: int
+    course_code: str
+    course_name: str
+    exam_date: date
+    time_slot: str
+    day_label: str | None
+    expected_student_count: int
+    exam_rooms: list[ExamRoomOut]

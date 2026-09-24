@@ -45,6 +45,73 @@ export interface CourseOut {
   name: string;
 }
 
+export interface WarningOut {
+  kind: string;
+  line_number: number | null;
+  message: string;
+}
+
+export interface RoomOut {
+  id: number;
+  code: string;
+  capacity: number;
+}
+
+export interface RoomImportResult {
+  status: "success" | "partial" | "failed";
+  rows_read: number;
+  rooms_created: number;
+  rooms_existing: number;
+  duplicate_rows: number;
+  validation_errors: ValidationErrorOut[];
+  conflicts: ConflictOut[];
+}
+
+export interface ScheduleImportResult {
+  status: "success" | "partial" | "failed";
+  rows_read: number;
+  exams_created: number;
+  exams_existing: number;
+  exam_rooms_created: number;
+  exam_rooms_existing: number;
+  duplicate_rows: number;
+  validation_errors: ValidationErrorOut[];
+  conflicts: ConflictOut[];
+  warnings: WarningOut[];
+}
+
+export interface ExamOut {
+  id: number;
+  course_id: number;
+  course_code: string;
+  course_name: string;
+  exam_date: string;
+  time_slot: string;
+  day_label: string | null;
+  expected_student_count: number;
+  room_count: number;
+}
+
+export interface ExamRoomOut {
+  id: number;
+  room_id: number;
+  room_code: string;
+  room_capacity: number;
+  allocated_students: number;
+}
+
+export interface ExamDetailOut {
+  id: number;
+  course_id: number;
+  course_code: string;
+  course_name: string;
+  exam_date: string;
+  time_slot: string;
+  day_label: string | null;
+  expected_student_count: number;
+  exam_rooms: ExamRoomOut[];
+}
+
 export interface PageMeta {
   total: number;
   limit: number;
@@ -65,13 +132,11 @@ async function readErrorDetail(response: Response): Promise<string> {
   }
 }
 
-export async function importRegistrationsCsv(
-  file: File,
-): Promise<RegistrationImportResult> {
+async function uploadCsv<T>(path: string, file: File): Promise<T> {
   const formData = new FormData();
   formData.append("file", file);
 
-  const response = await fetch(`${API_BASE_URL}/registrations/import`, {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
     method: "POST",
     body: formData,
   });
@@ -81,12 +146,13 @@ export async function importRegistrationsCsv(
   return response.json();
 }
 
-export async function fetchStudents(
-  limit = 50,
-  offset = 0,
-): Promise<Page<StudentOut>> {
+async function fetchPage<T>(
+  path: string,
+  limit: number,
+  offset: number,
+): Promise<Page<T>> {
   const response = await fetch(
-    `${API_BASE_URL}/students?limit=${limit}&offset=${offset}`,
+    `${API_BASE_URL}${path}?limit=${limit}&offset=${offset}`,
   );
   if (!response.ok) {
     throw new Error(await readErrorDetail(response));
@@ -94,13 +160,38 @@ export async function fetchStudents(
   return response.json();
 }
 
-export async function fetchCourses(
-  limit = 50,
-  offset = 0,
-): Promise<Page<CourseOut>> {
-  const response = await fetch(
-    `${API_BASE_URL}/courses?limit=${limit}&offset=${offset}`,
-  );
+export function importRegistrationsCsv(
+  file: File,
+): Promise<RegistrationImportResult> {
+  return uploadCsv<RegistrationImportResult>("/registrations/import", file);
+}
+
+export function fetchStudents(limit = 50, offset = 0): Promise<Page<StudentOut>> {
+  return fetchPage<StudentOut>("/students", limit, offset);
+}
+
+export function fetchCourses(limit = 50, offset = 0): Promise<Page<CourseOut>> {
+  return fetchPage<CourseOut>("/courses", limit, offset);
+}
+
+export function importRoomsCsv(file: File): Promise<RoomImportResult> {
+  return uploadCsv<RoomImportResult>("/rooms/import", file);
+}
+
+export function fetchRooms(limit = 50, offset = 0): Promise<Page<RoomOut>> {
+  return fetchPage<RoomOut>("/rooms", limit, offset);
+}
+
+export function importScheduleCsv(file: File): Promise<ScheduleImportResult> {
+  return uploadCsv<ScheduleImportResult>("/schedules/import", file);
+}
+
+export function fetchExams(limit = 50, offset = 0): Promise<Page<ExamOut>> {
+  return fetchPage<ExamOut>("/exams", limit, offset);
+}
+
+export async function fetchExam(examId: number): Promise<ExamDetailOut> {
+  const response = await fetch(`${API_BASE_URL}/exams/${examId}`);
   if (!response.ok) {
     throw new Error(await readErrorDetail(response));
   }

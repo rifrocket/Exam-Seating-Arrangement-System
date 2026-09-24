@@ -6,9 +6,11 @@ export default function Home() {
     <div className={styles.page}>
       <main className={styles.main}>
         <h1>Exam Seating Arrangement System</h1>
-        <p>
-          <Link href="/registrations">Go to Registrations →</Link>
-        </p>
+        <nav className={styles.nav}>
+          <Link href="/registrations">Registrations →</Link>
+          <Link href="/rooms">Rooms →</Link>
+          <Link href="/schedule">Schedule →</Link>
+        </nav>
       </main>
     </div>
   );
