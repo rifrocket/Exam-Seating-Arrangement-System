@@ -11,13 +11,34 @@ from datetime import date
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.db.models import CourseModel, ExamModel, ExamRoomModel, RegistrationModel, RoomModel, StudentModel
-from app.domain import Course, Exam, ExamRoom, Registration, Room, Student
+from app.db.models import (
+    CourseModel,
+    ExamModel,
+    ExamRoomModel,
+    RegistrationModel,
+    RoomModel,
+    SeatAssignmentModel,
+    SeatingGenerationModel,
+    StudentModel,
+)
+from app.domain import (
+    Course,
+    Exam,
+    ExamRoom,
+    GenerationStatus,
+    Registration,
+    Room,
+    SeatAssignment,
+    SeatingGeneration,
+    Student,
+)
 from app.repositories.course_repository import CourseRepository
 from app.repositories.exam_repository import ExamRepository
 from app.repositories.exam_room_repository import ExamRoomRepository
 from app.repositories.registration_repository import RegistrationRepository
 from app.repositories.room_repository import RoomRepository
+from app.repositories.seat_assignment_repository import SeatAssignmentRepository
+from app.repositories.seating_generation_repository import SeatingGenerationRepository
 from app.repositories.student_repository import StudentRepository
 
 
@@ -54,6 +75,32 @@ def _exam_room_to_domain(model: ExamRoomModel) -> ExamRoom:
         exam_id=model.exam_id,
         room_id=model.room_id,
         allocated_students=model.allocated_students,
+    )
+
+
+def _seating_generation_to_domain(model: SeatingGenerationModel) -> SeatingGeneration:
+    return SeatingGeneration(
+        id=model.id,
+        exam_id=model.exam_id,
+        strategy_name=model.strategy_name,
+        status=GenerationStatus(model.status),
+        total_registered=model.total_registered,
+        total_assigned=model.total_assigned,
+        total_unassigned=model.total_unassigned,
+        capacity_shortage=model.capacity_shortage,
+        warnings=list(model.warnings or []),
+        created_at=model.created_at,
+    )
+
+
+def _seat_assignment_to_domain(model: SeatAssignmentModel) -> SeatAssignment:
+    return SeatAssignment(
+        id=model.id,
+        seating_generation_id=model.seating_generation_id,
+        exam_id=model.exam_id,
+        room_id=model.room_id,
+        student_id=model.student_id,
+        seat_number=model.seat_number,
     )
 
 
@@ -244,7 +291,10 @@ class SqlAlchemyExamRoomRepository(ExamRoomRepository):
         return _exam_room_to_domain(model) if model else None
 
     def list_by_exam(self, exam_id: int) -> list[ExamRoom]:
-        stmt = select(ExamRoomModel).where(ExamRoomModel.exam_id == exam_id)
+        # Ordered by id (= insertion/import order) so the seating engine's
+        # room-fill sequence is deterministic and reproducible, not left to
+        # an unspecified database row order.
+        stmt = select(ExamRoomModel).where(ExamRoomModel.exam_id == exam_id).order_by(ExamRoomModel.id)
         return [_exam_room_to_domain(m) for m in self._session.scalars(stmt)]
 
     def list(self, limit: int | None = None, offset: int = 0) -> list[ExamRoom]:
@@ -265,3 +315,81 @@ class SqlAlchemyExamRoomRepository(ExamRoomRepository):
         self._session.add(model)
         self._session.flush()
         return _exam_room_to_domain(model)
+
+
+class SqlAlchemySeatingGenerationRepository(SeatingGenerationRepository):
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def get(self, entity_id: int) -> SeatingGeneration | None:
+        model = self._session.get(SeatingGenerationModel, entity_id)
+        return _seating_generation_to_domain(model) if model else None
+
+    def list_by_exam(self, exam_id: int) -> list[SeatingGeneration]:
+        stmt = select(SeatingGenerationModel).where(SeatingGenerationModel.exam_id == exam_id).order_by(
+            SeatingGenerationModel.id
+        )
+        return [_seating_generation_to_domain(m) for m in self._session.scalars(stmt)]
+
+    def list(self, limit: int | None = None, offset: int = 0) -> list[SeatingGeneration]:
+        stmt = select(SeatingGenerationModel).order_by(SeatingGenerationModel.id).offset(offset)
+        if limit is not None:
+            stmt = stmt.limit(limit)
+        return [_seating_generation_to_domain(m) for m in self._session.scalars(stmt)]
+
+    def count(self) -> int:
+        return self._session.scalar(select(func.count()).select_from(SeatingGenerationModel)) or 0
+
+    def add(self, entity: SeatingGeneration) -> SeatingGeneration:
+        model = SeatingGenerationModel(
+            exam_id=entity.exam_id,
+            strategy_name=entity.strategy_name,
+            status=entity.status.value,
+            total_registered=entity.total_registered,
+            total_assigned=entity.total_assigned,
+            total_unassigned=entity.total_unassigned,
+            capacity_shortage=entity.capacity_shortage,
+            warnings=list(entity.warnings),
+        )
+        self._session.add(model)
+        self._session.flush()
+        self._session.refresh(model)
+        return _seating_generation_to_domain(model)
+
+
+class SqlAlchemySeatAssignmentRepository(SeatAssignmentRepository):
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def get(self, entity_id: int) -> SeatAssignment | None:
+        model = self._session.get(SeatAssignmentModel, entity_id)
+        return _seat_assignment_to_domain(model) if model else None
+
+    def list_by_generation(self, seating_generation_id: int) -> list[SeatAssignment]:
+        stmt = (
+            select(SeatAssignmentModel)
+            .where(SeatAssignmentModel.seating_generation_id == seating_generation_id)
+            .order_by(SeatAssignmentModel.room_id, SeatAssignmentModel.seat_number)
+        )
+        return [_seat_assignment_to_domain(m) for m in self._session.scalars(stmt)]
+
+    def list(self, limit: int | None = None, offset: int = 0) -> list[SeatAssignment]:
+        stmt = select(SeatAssignmentModel).order_by(SeatAssignmentModel.id).offset(offset)
+        if limit is not None:
+            stmt = stmt.limit(limit)
+        return [_seat_assignment_to_domain(m) for m in self._session.scalars(stmt)]
+
+    def count(self) -> int:
+        return self._session.scalar(select(func.count()).select_from(SeatAssignmentModel)) or 0
+
+    def add(self, entity: SeatAssignment) -> SeatAssignment:
+        model = SeatAssignmentModel(
+            seating_generation_id=entity.seating_generation_id,
+            exam_id=entity.exam_id,
+            room_id=entity.room_id,
+            student_id=entity.student_id,
+            seat_number=entity.seat_number,
+        )
+        self._session.add(model)
+        self._session.flush()
+        return _seat_assignment_to_domain(model)

@@ -5,7 +5,7 @@ service result types but never replace them — services and repositories
 never import from this module.
 """
 
-from datetime import date
+from datetime import date, datetime
 
 from pydantic import BaseModel
 
@@ -152,3 +152,46 @@ class ExamDetailOut(BaseModel):
     day_label: str | None
     expected_student_count: int
     exam_rooms: list[ExamRoomOut]
+
+
+class SeatingGenerateRequest(BaseModel):
+    strategy: str = "sequential"
+
+
+class SeatingGenerationOut(BaseModel):
+    id: int
+    exam_id: int
+    strategy_name: str
+    status: str
+    total_registered: int
+    total_assigned: int
+    total_unassigned: int
+    capacity_shortage: bool
+    warnings: list[str]
+    created_at: datetime | None
+
+
+class SeatingGenerationResponse(SeatingGenerationOut):
+    scheduled_student_count: int
+    available_capacity: int
+    unassigned_student_ids: list[int]
+
+
+class SeatingGenerationListResponse(BaseModel):
+    items: list[SeatingGenerationOut]
+    meta: PageMeta
+
+
+class SeatAssignmentOut(BaseModel):
+    id: int
+    room_id: int
+    room_code: str
+    student_id: int
+    student_number: str
+    student_name: str
+    seat_number: int
+
+
+class SeatAssignmentListResponse(BaseModel):
+    generation: SeatingGenerationOut
+    items: list[SeatAssignmentOut]

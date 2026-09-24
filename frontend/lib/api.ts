@@ -112,6 +112,40 @@ export interface ExamDetailOut {
   exam_rooms: ExamRoomOut[];
 }
 
+export interface SeatingGenerationOut {
+  id: number;
+  exam_id: number;
+  strategy_name: string;
+  status: "pending" | "success" | "partial" | "failed";
+  total_registered: number;
+  total_assigned: number;
+  total_unassigned: number;
+  capacity_shortage: boolean;
+  warnings: string[];
+  created_at: string | null;
+}
+
+export interface SeatingGenerationResult extends SeatingGenerationOut {
+  scheduled_student_count: number;
+  available_capacity: number;
+  unassigned_student_ids: number[];
+}
+
+export interface SeatAssignmentOut {
+  id: number;
+  room_id: number;
+  room_code: string;
+  student_id: number;
+  student_number: string;
+  student_name: string;
+  seat_number: number;
+}
+
+export interface SeatAssignmentListResult {
+  generation: SeatingGenerationOut;
+  items: SeatAssignmentOut[];
+}
+
 export interface PageMeta {
   total: number;
   limit: number;
@@ -192,6 +226,46 @@ export function fetchExams(limit = 50, offset = 0): Promise<Page<ExamOut>> {
 
 export async function fetchExam(examId: number): Promise<ExamDetailOut> {
   const response = await fetch(`${API_BASE_URL}/exams/${examId}`);
+  if (!response.ok) {
+    throw new Error(await readErrorDetail(response));
+  }
+  return response.json();
+}
+
+export async function generateSeating(
+  examId: number,
+  strategy = "sequential",
+): Promise<SeatingGenerationResult> {
+  const response = await fetch(
+    `${API_BASE_URL}/exams/${examId}/seating/generate`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ strategy }),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(await readErrorDetail(response));
+  }
+  return response.json();
+}
+
+export async function fetchGenerations(
+  examId: number,
+): Promise<Page<SeatingGenerationOut>> {
+  return fetchPage<SeatingGenerationOut>(
+    `/exams/${examId}/seating/generations`,
+    50,
+    0,
+  );
+}
+
+export async function fetchAssignments(
+  generationId: number,
+): Promise<SeatAssignmentListResult> {
+  const response = await fetch(
+    `${API_BASE_URL}/seating/generations/${generationId}/assignments`,
+  );
   if (!response.ok) {
     throw new Error(await readErrorDetail(response));
   }

@@ -3,8 +3,24 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
-import { ExamDetailOut, fetchExam } from "@/lib/api";
+import {
+  ExamDetailOut,
+  SeatAssignmentOut,
+  SeatingGenerationOut,
+  SeatingGenerationResult,
+  fetchAssignments,
+  fetchExam,
+  fetchGenerations,
+  generateSeating,
+} from "@/lib/api";
 import styles from "../page.module.css";
+
+const STATUS_CLASS: Record<SeatingGenerationOut["status"], string> = {
+  pending: "",
+  success: styles.statusSuccess,
+  partial: styles.statusPartial,
+  failed: styles.statusFailed,
+};
 
 export default function ExamDetailPage() {
   const params = useParams<{ examId: string }>();
@@ -13,20 +29,58 @@ export default function ExamDetailPage() {
   const [exam, setExam] = useState<ExamDetailOut | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const [generations, setGenerations] = useState<SeatingGenerationOut[]>([]);
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [generateError, setGenerateError] = useState<string | null>(null);
+  const [latest, setLatest] = useState<SeatingGenerationResult | null>(null);
+  const [assignments, setAssignments] = useState<SeatAssignmentOut[]>([]);
+
+  async function loadExam() {
+    try {
+      const detail = await fetchExam(examId);
+      setExam(detail);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function loadGenerations() {
+    try {
+      const page = await fetchGenerations(examId);
+      setGenerations(page.items);
+    } catch {
+      // Non-fatal for the page: the exam detail above already surfaces load errors.
+    }
+  }
+
   useEffect(() => {
-    async function load() {
-      try {
-        const detail = await fetchExam(examId);
-        setExam(detail);
-        setError(null);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
-      }
-    }
+    // Load-on-mount/on-id-change from the backend API — see the same
+    // rationale on the Registrations page for why this plain fetch-in-effect
+    // pattern (no data-fetching library yet) is intentional here.
     if (Number.isFinite(examId)) {
-      load();
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      loadExam();
+      loadGenerations();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [examId]);
+
+  async function handleGenerate() {
+    setIsGenerating(true);
+    setGenerateError(null);
+    try {
+      const result = await generateSeating(examId);
+      setLatest(result);
+      const assignmentPage = await fetchAssignments(result.id);
+      setAssignments(assignmentPage.items);
+      await loadGenerations();
+    } catch (err) {
+      setGenerateError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsGenerating(false);
+    }
+  }
 
   return (
     <div className={styles.page}>
@@ -97,6 +151,133 @@ export default function ExamDetailPage() {
                   ))}
                 </tbody>
               </table>
+            )}
+          </section>
+
+          <section>
+            <h2>Seating</h2>
+            <div className={styles.uploadRow}>
+              <button
+                type="button"
+                onClick={handleGenerate}
+                disabled={isGenerating}
+              >
+                {isGenerating ? "Generating…" : "Generate seating (sequential)"}
+              </button>
+            </div>
+
+            {generateError && (
+              <div className={styles.errorBanner} role="alert">
+                {generateError}
+              </div>
+            )}
+
+            {latest && (
+              <div>
+                <p>
+                  Status:{" "}
+                  <span
+                    className={`${styles.statusBadge} ${STATUS_CLASS[latest.status]}`}
+                  >
+                    {latest.status}
+                  </span>
+                </p>
+                <div className={styles.summaryGrid}>
+                  <div className={styles.summaryCard}>
+                    <div className={styles.value}>{latest.total_registered}</div>
+                    <div className={styles.label}>Registered</div>
+                  </div>
+                  <div className={styles.summaryCard}>
+                    <div className={styles.value}>{latest.scheduled_student_count}</div>
+                    <div className={styles.label}>Scheduled</div>
+                  </div>
+                  <div className={styles.summaryCard}>
+                    <div className={styles.value}>{latest.available_capacity}</div>
+                    <div className={styles.label}>Available capacity</div>
+                  </div>
+                  <div className={styles.summaryCard}>
+                    <div className={styles.value}>{latest.total_assigned}</div>
+                    <div className={styles.label}>Assigned</div>
+                  </div>
+                  <div className={styles.summaryCard}>
+                    <div className={styles.value}>{latest.total_unassigned}</div>
+                    <div className={styles.label}>Unassigned</div>
+                  </div>
+                </div>
+
+                {latest.capacity_shortage && (
+                  <div className={styles.errorBanner} role="alert">
+                    Capacity shortage: {latest.total_unassigned} student(s)
+                    could not be seated.
+                  </div>
+                )}
+
+                {latest.warnings.length > 0 && (
+                  <ul className={styles.issueList}>
+                    {latest.warnings.map((warning, index) => (
+                      <li key={index}>{warning}</li>
+                    ))}
+                  </ul>
+                )}
+
+                {assignments.length > 0 && (
+                  <table className={styles.dataTable}>
+                    <thead>
+                      <tr>
+                        <th>Room</th>
+                        <th>Seat</th>
+                        <th>Student ID</th>
+                        <th>Student name</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {assignments
+                        .slice()
+                        .sort((a, b) =>
+                          a.room_code === b.room_code
+                            ? a.seat_number - b.seat_number
+                            : a.room_code.localeCompare(b.room_code),
+                        )
+                        .map((assignment) => (
+                          <tr key={assignment.id}>
+                            <td>{assignment.room_code}</td>
+                            <td>{assignment.seat_number}</td>
+                            <td>{assignment.student_number}</td>
+                            <td>{assignment.student_name}</td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            )}
+
+            {generations.length > 0 && (
+              <>
+                <h3>Past generations ({generations.length})</h3>
+                <table className={styles.dataTable}>
+                  <thead>
+                    <tr>
+                      <th>Strategy</th>
+                      <th>Status</th>
+                      <th>Assigned / Registered</th>
+                      <th>Created</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {generations.map((generation) => (
+                      <tr key={generation.id}>
+                        <td>{generation.strategy_name}</td>
+                        <td>{generation.status}</td>
+                        <td>
+                          {generation.total_assigned} / {generation.total_registered}
+                        </td>
+                        <td>{generation.created_at ?? "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </>
             )}
           </section>
         </>
