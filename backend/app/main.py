@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.exams import router as exams_router
 from app.api.health import router as health_router
 from app.api.registrations import router as registrations_router
+from app.api.reports import router as reports_router
 from app.api.rooms import router as rooms_router
 from app.api.schedules import router as schedules_router
 from app.api.seating import router as seating_router
@@ -38,6 +39,7 @@ def create_app() -> FastAPI:
     app.include_router(exams_router)
     app.include_router(rooms_router)
     app.include_router(seating_router)
+    app.include_router(reports_router)
     return app
 
 

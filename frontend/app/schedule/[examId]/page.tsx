@@ -12,6 +12,8 @@ import {
   fetchExam,
   fetchGenerations,
   generateSeating,
+  rangesReportUrl,
+  seatingReportUrl,
 } from "@/lib/api";
 import styles from "../page.module.css";
 
@@ -34,6 +36,14 @@ export default function ExamDetailPage() {
   const [generateError, setGenerateError] = useState<string | null>(null);
   const [latest, setLatest] = useState<SeatingGenerationResult | null>(null);
   const [assignments, setAssignments] = useState<SeatAssignmentOut[]>([]);
+
+  const [viewedGenerationId, setViewedGenerationId] = useState<number | null>(
+    null,
+  );
+  const [viewedAssignments, setViewedAssignments] = useState<
+    SeatAssignmentOut[]
+  >([]);
+  const [viewError, setViewError] = useState<string | null>(null);
 
   async function loadExam() {
     try {
@@ -79,6 +89,17 @@ export default function ExamDetailPage() {
       setGenerateError(err instanceof Error ? err.message : String(err));
     } finally {
       setIsGenerating(false);
+    }
+  }
+
+  async function handleViewAssignments(generationId: number) {
+    setViewError(null);
+    try {
+      const page = await fetchAssignments(generationId);
+      setViewedGenerationId(generationId);
+      setViewedAssignments(page.items);
+    } catch (err) {
+      setViewError(err instanceof Error ? err.message : String(err));
     }
   }
 
@@ -244,6 +265,25 @@ export default function ExamDetailPage() {
                   </ul>
                 )}
 
+                {latest.total_assigned > 0 && (
+                  <div className={styles.uploadRow}>
+                    <a
+                      href={seatingReportUrl(latest.id)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      Seating PDF
+                    </a>
+                    <a
+                      href={rangesReportUrl(latest.id)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      ID Range PDF
+                    </a>
+                  </div>
+                )}
+
                 {assignments.length > 0 && (
                   <table className={styles.dataTable}>
                     <thead>
@@ -282,25 +322,99 @@ export default function ExamDetailPage() {
                 <table className={styles.dataTable}>
                   <thead>
                     <tr>
+                      <th>Generation</th>
                       <th>Strategy</th>
                       <th>Status</th>
                       <th>Assigned / Registered</th>
                       <th>Created</th>
+                      <th>Actions</th>
                     </tr>
                   </thead>
                   <tbody>
                     {generations.map((generation) => (
                       <tr key={generation.id}>
+                        <td>#{generation.id}</td>
                         <td>{generation.strategy_name}</td>
                         <td>{generation.status}</td>
                         <td>
                           {generation.total_assigned} / {generation.total_registered}
                         </td>
                         <td>{generation.created_at ?? "—"}</td>
+                        <td>
+                          <div className={styles.uploadRow}>
+                            <button
+                              type="button"
+                              onClick={() => handleViewAssignments(generation.id)}
+                            >
+                              View Assignments
+                            </button>
+                            {generation.total_assigned > 0 && (
+                              <>
+                                <a
+                                  href={seatingReportUrl(generation.id)}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                >
+                                  Seating PDF
+                                </a>
+                                <a
+                                  href={rangesReportUrl(generation.id)}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                >
+                                  ID Range PDF
+                                </a>
+                              </>
+                            )}
+                          </div>
+                        </td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
+
+                {viewError && (
+                  <div className={styles.errorBanner} role="alert">
+                    {viewError}
+                  </div>
+                )}
+
+                {viewedGenerationId !== null && (
+                  <>
+                    <h4>Assignments for generation #{viewedGenerationId}</h4>
+                    {viewedAssignments.length === 0 ? (
+                      <p className={styles.empty}>No assignments for this generation.</p>
+                    ) : (
+                      <table className={styles.dataTable}>
+                        <thead>
+                          <tr>
+                            <th>Room</th>
+                            <th>Seat</th>
+                            <th>Student ID</th>
+                            <th>Student name</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {viewedAssignments
+                            .slice()
+                            .sort((a, b) =>
+                              a.room_code === b.room_code
+                                ? a.seat_number - b.seat_number
+                                : a.room_code.localeCompare(b.room_code),
+                            )
+                            .map((assignment) => (
+                              <tr key={assignment.id}>
+                                <td>{assignment.room_code}</td>
+                                <td>{assignment.seat_number}</td>
+                                <td>{assignment.student_number}</td>
+                                <td>{assignment.student_name}</td>
+                              </tr>
+                            ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </>
+                )}
               </>
             )}
           </section>

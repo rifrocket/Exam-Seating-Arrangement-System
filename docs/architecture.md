@@ -4,11 +4,13 @@ This document describes the architecture of the modular Exam Seating
 Arrangement System as actually implemented through Milestone 3
 (Schedule & Exam Management, commit `94cb6ff`), with the **Seating
 strategy abstraction** section additionally updated for Milestone 4
-(Seating Engine + Sequential Seating, commit `4b4f2a6`) — the rest of
-this document has not been re-synchronized against every Milestone 4
-change. It complements — and does not replace — the repository audit,
-which explains why the legacy `main.py`/`services/`/`models/`/`views/`
-script is being superseded rather than incrementally patched.
+(Seating Engine + Sequential Seating, commit `4b4f2a6`) and the
+**Report boundary** section updated for Milestone 5 (Report Generation
+& End-to-End MVP Workflow) — the rest of this document has not been
+re-synchronized against every change from those milestones. It
+complements — and does not replace — the repository audit, which
+explains why the legacy `main.py`/`services/`/`models/`/`views/` script
+is being superseded rather than incrementally patched.
 
 ## Goals this architecture serves
 
@@ -30,13 +32,13 @@ script is being superseded rather than incrementally patched.
 ```
 backend/
   app/
-    api/            HTTP boundary: health, registrations, schedules, exams, rooms
-    services/        registration_import/, schedule_import/, room_import.py
-                      (seating-generation orchestration reserved for a later milestone)
+    api/            HTTP boundary: health, registrations, schedules, exams, rooms, seating, reports
+    services/        registration_import/, schedule_import/, room_import.py,
+                      seating_generation/, reports/
     domain/          plain domain models
     repositories/    persistence interfaces + SQLAlchemy-backed implementations (db/repositories.py)
-    seating/         reserved — no code yet (seating-generation milestone)
-    reports/         reserved — no code yet (reports milestone)
+    seating/         SeatingEngine, SeatingStrategy, SequentialSeatingStrategy
+    reports/         pure ReportLab render functions (seating + ID-range reports)
     db/              SQLAlchemy models, session, init_db (+ schema-compatibility guard)
   tests/
 frontend/
@@ -53,9 +55,9 @@ peer layers:
 ```
 frontend  ──HTTP──>  api/  ──>  services/  ──>  domain/
                                     │      \
-                                    │       └─>  seating/  ──>  domain/   (reserved, no code yet)
+                                    │       └─>  seating/  ──>  domain/
                                     ├─>  repositories/ (interfaces)  ──>  domain/
-                                    └─>  reports/  ──>  domain/           (reserved, no code yet)
+                                    └─>  reports/  ──>  domain/
 
 db/  implements repositories/ against domain/, and depends on domain/ +
      SQLAlchemy — nothing in domain/, seating/, or repositories/ (as
@@ -82,11 +84,12 @@ Concretely, as enforced today:
   compatibility guard — see **Persistence boundary**). Depends on
   `app/domain` and SQLAlchemy. Nothing outside `db/` imports SQLAlchemy
   directly.
-- `app/services/` — `registration_import/` (Milestone 2) and
-  `schedule_import/` + `room_import.py` (Milestone 3) are populated;
-  each is a pure parser/validator plus a service class that depends only
-  on repository interfaces. Seating-generation orchestration remains
-  reserved for a later milestone.
+- `app/services/` — `registration_import/` (Milestone 2),
+  `schedule_import/` + `room_import.py` (Milestone 3),
+  `seating_generation/` (Milestone 4), and `reports/` (Milestone 5) are
+  all populated; each depends only on repository interfaces (and, for
+  `seating_generation/`, the pure `app/seating/` engine; for `reports/`,
+  the pure `app/reports/` renderers) — never on FastAPI or raw SQL.
 - `app/api/*` — FastAPI routers. A router calls a service for import
   endpoints (`registrations.py`, `schedules.py`, `rooms.py`'s import
   route) or composes read-only repository calls directly for list/detail
@@ -94,19 +97,21 @@ Concretely, as enforced today:
   `exams/{id}`) — the latter is data composition (assembling a response
   DTO from one or two repository reads), never business logic. No router
   contains parsing, validation rules, or SQL.
-- `app/seating/`, `app/reports/` — still empty packages (docstring only).
-  Reserved boundaries, not stubs.
+- `app/seating/` — `SeatingEngine`, `SeatingStrategy`,
+  `SequentialSeatingStrategy` (Milestone 4). `app/reports/` — pure
+  ReportLab render functions (Milestone 5). Neither imports the other,
+  and neither imports FastAPI/SQLAlchemy/repositories.
 
 ## Module responsibilities
 
 | Module | Responsible for | Not responsible for |
 |---|---|---|
 | `api/` | HTTP request/response shapes, status codes, routing, read-only response composition | validation logic, seating, persistence details |
-| `services/` | orchestrating a use case (e.g. "import this registration/schedule/room CSV") | HTTP concerns, SQL, ReportLab calls |
+| `services/` | orchestrating a use case (e.g. "import this registration/schedule/room CSV", "generate seating", "assemble a report") | HTTP concerns, SQL, ReportLab calls |
 | `domain/` | what a Student/Course/Exam/ExamRoom/Room/etc. *is* | how it's stored, rendered, or transported |
 | `repositories/` | the *interface* (and, in `db/`, the concrete implementation) for loading/saving domain objects | business rules about what to load/save and when |
-| `seating/` | (reserved) the *interface and orchestration* for turning students+rooms into seat assignments | which concrete algorithm is "best" — that's a strategy's job |
-| `reports/` | (reserved) turning domain data into PDFs | deciding what data to show (that's a service's job) |
+| `seating/` | the strategy interface + engine for turning students+rooms into seat assignments | which concrete algorithm is "best" — that's a strategy's job |
+| `reports/` | turning already-assembled data into PDFs | deciding what data to show or querying the database (that's `services/reports/`'s job) |
 | `db/` | SQLAlchemy table definitions, engine/session lifecycle, schema initialization + compatibility guard | business rules |
 | `frontend/` | presentation, calling the API, rendering responses | seating logic, validation logic, direct DB or file access |
 
@@ -438,14 +443,97 @@ seat numbering.
   returned directly — every response is a Pydantic model in
   `app/api/schemas.py`.
 
-## Report boundary
+## Report boundary (Milestone 5: implemented)
 
-`app/reports/` is reserved for a direct adaptation of the legacy
-`views/seating_view.py` and `views/ranges_view.py` ReportLab code. The
-layout logic (tables, margins, headings) is worth preserving as-is; what
-changes is the input shape — functions will take domain objects /
-service-layer DTOs instead of positional primitive arguments, so report
-generation doesn't need to know about HTTP or the database.
+```text
+API (app/api/reports.py)
+ ↓
+ReportService (app/services/reports/service.py)
+ ↓
+repositories (SeatingGeneration, SeatAssignment, Exam, ExamRoom, Course, Room, Student — read-only)
+ ↓
+ReportLab adapter (app/reports/seating_report.py, app/reports/ranges_report.py)
+ ↓
+PDF bytes → FastAPI Response(media_type="application/pdf")
+```
+
+`app/reports/` holds only pure rendering functions
+(`render_seating_report`, `render_ranges_report`) that take a plain
+dataclass (`app.reports.models`) and return PDF bytes — no FastAPI, no
+SQLAlchemy, no filesystem, no repositories. `app/services/reports/`
+assembles that dataclass by reading (never writing) from repositories.
+Neither layer imports `app/seating/` — the seating engine and its
+strategies remain completely unaware that ReportLab, PDF generation, or
+HTTP responses exist, and nothing in the report path can trigger a
+seating generation.
+
+**Legacy code assessment** (`views/seating_view.py`,
+`views/ranges_view.py`): each file's `generate_pdf` method — the actual
+ReportLab table/paragraph layout — was already clean, dependency-free
+code and is reused almost verbatim (same column widths, same table
+style, same paragraph structure). What was **not** reused: each class's
+constructor, which wrote directly to `./outputs/{date}/...` on disk (the
+new adapters take a `BytesIO` buffer and return bytes instead, so the API
+can serve the PDF over HTTP with no filesystem coupling); and the data
+these views were fed, which came from `main.py`'s global, mutating
+`registerationObj`/`rangesObj` dicts built while walking the schedule
+FIFO-style — that data source no longer exists and is replaced by
+`ReportService` reading persisted `SeatAssignment` rows for one specific
+`SeatingGeneration`.
+
+**Supported report types:**
+- **Seating Arrangement Report** (`SeatingReportData` /
+  `render_seating_report`) — one PDF per generation, with a room-by-room
+  section (room code, then a `Seat# | Student ID | Name | Signature`
+  table) covering every room that has at least one assignment in that
+  generation, in the exam's canonical room order (see "Deterministic
+  ordering" above).
+- **ID Range Report** (`RangeReportData` / `render_ranges_report`) — the
+  legacy "start ID / end ID per room" report, preserved because it
+  remains meaningful under the new model: since students are assigned in
+  deterministic student-number order and a room's seat numbers are
+  contiguous within that order, `min`/`max` student_number among a room's
+  `SeatAssignment` rows is a faithful start/end ID range — not an
+  incidental one. One documented deviation: the legacy table's last
+  column was labeled "Capacity" but actually held the count of students
+  *assigned* to that room, not the room's physical capacity — reusing
+  that label here would recreate exactly the ambiguity the capacity-
+  semantics work (the `c68a355` follow-up) fixed elsewhere, so this
+  column is labeled "Assigned" instead. A room with zero assigned
+  students in a given generation is omitted from both reports' room
+  lists rather than shown with an empty range.
+
+**Report data source and the core invariant:** both report types are
+built exclusively from a specific, already-persisted `SeatingGeneration`
+and its `SeatAssignment` rows (`SeatAssignmentRepository.list_by_generation(generation_id)`).
+`ReportService` never calls `SeatingService`, never touches
+`app/seating/`, and never re-queries current registrations — a report
+for generation X reflects generation X's stored assignments, permanently,
+even after later regenerations for the same exam create generations
+Y, Z, .... This is what makes per-generation reports meaningful once
+multiple generations exist for one exam (see "Generation status" and
+"Seating generation" above — regeneration was already designed to be
+non-destructive; reports are simply a read view over that same
+append-only history).
+
+**Report endpoints** (`app/api/reports.py`), both scoped to an existing
+generation, never to an exam directly — requesting a report can never
+create or recompute a generation as a side effect:
+- `GET /seating/generations/{generation_id}/reports/seating`
+- `GET /seating/generations/{generation_id}/reports/ranges`
+
+Both return `application/pdf` with `Content-Disposition: inline` (so a
+plain `<a target="_blank">` link lets the browser display the PDF rather
+than forcing a download — the frontend's report buttons are exactly
+that, no blob-fetching JavaScript involved). Error behavior: unknown
+`generation_id` → 404; a generation with zero `SeatAssignment` rows
+(e.g. `status: failed`, or an exam with no rooms ever scheduled) → 409,
+not a silently-empty PDF, so a genuine data gap stays visible instead of
+looking like a successful-but-blank report; an unexpected rendering
+failure → 500 with a generic message (the real exception is logged, not
+returned to the client). "Invalid report type" needs no special handling
+— it's just a 404 from normal FastAPI routing, since only these two
+paths exist under `/reports/`.
 
 ## Future extension points
 
@@ -485,9 +573,9 @@ The following are **not** implemented yet, anywhere in the codebase:
   `Constraint` entity/schema).
 - An **optimization engine** (`OptimizationSeatingStrategy`).
 - **Advanced seating UI** (seat-map visualization, drag-and-drop).
-- **Generation comparison UI** (diffing/comparing `SeatingGeneration` runs).
-- **Report generation** *logic* (`app/reports/` module boundary exists;
-  its contents do not).
+- **Generation comparison UI** (diffing/comparing `SeatingGeneration` runs
+  side by side — each generation's own report is available (Milestone 5),
+  but nothing compares two generations against each other).
 - **Alembic** — the schema-compatibility guard added in Milestone 3 is a
   safety mechanism, not a migration tool (see **Persistence boundary**);
   Alembic itself remains unintroduced.

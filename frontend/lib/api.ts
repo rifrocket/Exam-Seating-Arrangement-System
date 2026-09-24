@@ -276,3 +276,14 @@ export async function fetchAssignments(
   }
   return response.json();
 }
+
+// Plain URLs, not fetch wrappers — these are meant to be used directly as
+// <a href> targets so the browser handles the PDF response itself
+// (Content-Disposition: inline lets it display in a new tab).
+export function seatingReportUrl(generationId: number): string {
+  return `${API_BASE_URL}/seating/generations/${generationId}/reports/seating`;
+}
+
+export function rangesReportUrl(generationId: number): string {
+  return `${API_BASE_URL}/seating/generations/${generationId}/reports/ranges`;
+}
