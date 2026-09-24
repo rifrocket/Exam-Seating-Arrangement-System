@@ -1,11 +1,12 @@
 # Architecture
 
-This document describes the target architecture for the modular Exam
-Seating Arrangement System, and which parts of it exist as of the
-foundation milestone versus which parts are designed-for but not yet
-built. It complements — and does not replace — the repository audit,
-which explains why the legacy `main.py`/`services/`/`models/`/`views/`
-script is being superseded rather than incrementally patched.
+This document describes the architecture of the modular Exam Seating
+Arrangement System as actually implemented through Milestone 3
+(Schedule & Exam Management, commit `94cb6ff`), and which parts remain
+designed-for but not yet built. It complements — and does not replace —
+the repository audit, which explains why the legacy
+`main.py`/`services/`/`models/`/`views/` script is being superseded
+rather than incrementally patched.
 
 ## Goals this architecture serves
 
@@ -27,16 +28,17 @@ script is being superseded rather than incrementally patched.
 ```
 backend/
   app/
-    api/            HTTP boundary
-    services/        application/business services (empty until next milestone)
+    api/            HTTP boundary: health, registrations, schedules, exams, rooms
+    services/        registration_import/, schedule_import/, room_import.py
+                      (seating-generation orchestration reserved for a later milestone)
     domain/          plain domain models
-    repositories/    persistence interfaces
-    seating/         seating engine + strategies (empty until seating-generation milestone)
-    reports/         PDF report generation (empty until reports milestone)
-    db/              SQLAlchemy models, session, init
+    repositories/    persistence interfaces + SQLAlchemy-backed implementations (db/repositories.py)
+    seating/         reserved — no code yet (seating-generation milestone)
+    reports/         reserved — no code yet (reports milestone)
+    db/              SQLAlchemy models, session, init_db (+ schema-compatibility guard)
   tests/
 frontend/
-  app/               Next.js App Router pages (shell only, no business logic)
+  app/               Next.js App Router pages: /registrations, /rooms, /schedule, /schedule/[examId]
 docs/
   architecture.md    this file
 ```
@@ -49,9 +51,9 @@ peer layers:
 ```
 frontend  ──HTTP──>  api/  ──>  services/  ──>  domain/
                                     │      \
-                                    │       └─>  seating/  ──>  domain/
+                                    │       └─>  seating/  ──>  domain/   (reserved, no code yet)
                                     ├─>  repositories/ (interfaces)  ──>  domain/
-                                    └─>  reports/  ──>  domain/
+                                    └─>  reports/  ──>  domain/           (reserved, no code yet)
 
 db/  implements repositories/ against domain/, and depends on domain/ +
      SQLAlchemy — nothing in domain/, seating/, or repositories/ (as
@@ -65,51 +67,76 @@ Concretely, as enforced today:
   of the codebase every other layer is allowed to depend on, so it must
   depend on nothing itself.
 - `app/repositories/*` — abstract interfaces (`abc.ABC`) typed against
-  `app/domain` dataclasses only. No SQLAlchemy import. A concrete,
-  SQLAlchemy-backed implementation of these interfaces will live under
-  `app/db/` (or `app/repositories/sqlalchemy_*.py`) starting with the
-  milestone that first needs one — introducing it now, with nothing to
-  read or write yet, would be speculative.
+  `app/domain` dataclasses only. No SQLAlchemy import. Concrete,
+  SQLAlchemy-backed implementations live in `app/db/repositories.py`
+  (`SqlAlchemyStudentRepository`, `SqlAlchemyCourseRepository`,
+  `SqlAlchemyRegistrationRepository`, `SqlAlchemyRoomRepository`,
+  `SqlAlchemyExamRepository`, `SqlAlchemyExamRoomRepository`) — introduced
+  incrementally, one aggregate at a time, alongside the milestone that
+  first needed to read/write it (Milestone 2 for
+  Student/Course/Registration, Milestone 3 for Room/Exam/ExamRoom).
 - `app/db/*` — SQLAlchemy `DeclarativeBase`, ORM models, engine/session
-  factory, and the `init_db()` mechanism. Depends on `app/domain` (to
-  eventually map to/from it) and SQLAlchemy. Nothing outside `db/`
-  imports SQLAlchemy directly.
-- `app/api/*` — FastAPI routers only. Talks to `services/` (once
-  populated) and takes a `Session` via `Depends(get_db_session)`. The
-  current `health` endpoint is the only router; it deliberately does a
-  trivial `SELECT 1` through the same dependency-injected session future
-  endpoints will use, so it also proves the DB wiring end-to-end.
-- `app/services/`, `app/seating/`, `app/reports/` — currently empty
-  packages (docstring only). Reserved boundaries, not stubs: no
-  placeholder classes were added just to make the tree look complete.
+  factory, and the `init_db()` mechanism (including the schema-
+  compatibility guard — see **Persistence boundary**). Depends on
+  `app/domain` and SQLAlchemy. Nothing outside `db/` imports SQLAlchemy
+  directly.
+- `app/services/` — `registration_import/` (Milestone 2) and
+  `schedule_import/` + `room_import.py` (Milestone 3) are populated;
+  each is a pure parser/validator plus a service class that depends only
+  on repository interfaces. Seating-generation orchestration remains
+  reserved for a later milestone.
+- `app/api/*` — FastAPI routers. A router calls a service for import
+  endpoints (`registrations.py`, `schedules.py`, `rooms.py`'s import
+  route) or composes read-only repository calls directly for list/detail
+  endpoints (`students`, `courses`, `registrations`, `rooms`, `exams`,
+  `exams/{id}`) — the latter is data composition (assembling a response
+  DTO from one or two repository reads), never business logic. No router
+  contains parsing, validation rules, or SQL.
+- `app/seating/`, `app/reports/` — still empty packages (docstring only).
+  Reserved boundaries, not stubs.
 
 ## Module responsibilities
 
 | Module | Responsible for | Not responsible for |
 |---|---|---|
-| `api/` | HTTP request/response shapes, status codes, routing | validation logic, seating, persistence details |
-| `services/` | orchestrating a use case (e.g. "import this registration CSV", "generate seating for this exam") | HTTP concerns, SQL, ReportLab calls |
-| `domain/` | what a Student/Course/Exam/Room/etc. *is* | how it's stored, rendered, or transported |
-| `repositories/` | the *interface* for loading/saving domain objects | the SQL/ORM used to do so |
-| `seating/` | the *interface and orchestration* for turning students+rooms into seat assignments | which concrete algorithm is "best" — that's a strategy's job |
-| `reports/` | turning domain data into PDFs | deciding what data to show (that's a service's job) |
-| `db/` | SQLAlchemy table definitions, engine/session lifecycle, schema initialization | business rules |
+| `api/` | HTTP request/response shapes, status codes, routing, read-only response composition | validation logic, seating, persistence details |
+| `services/` | orchestrating a use case (e.g. "import this registration/schedule/room CSV") | HTTP concerns, SQL, ReportLab calls |
+| `domain/` | what a Student/Course/Exam/ExamRoom/Room/etc. *is* | how it's stored, rendered, or transported |
+| `repositories/` | the *interface* (and, in `db/`, the concrete implementation) for loading/saving domain objects | business rules about what to load/save and when |
+| `seating/` | (reserved) the *interface and orchestration* for turning students+rooms into seat assignments | which concrete algorithm is "best" — that's a strategy's job |
+| `reports/` | (reserved) turning domain data into PDFs | deciding what data to show (that's a service's job) |
+| `db/` | SQLAlchemy table definitions, engine/session lifecycle, schema initialization + compatibility guard | business rules |
 | `frontend/` | presentation, calling the API, rendering responses | seating logic, validation logic, direct DB or file access |
 
 ## Domain boundaries
 
-Seven entities exist as of this milestone (see the audit for the full
-reasoning on what was included vs. deferred):
+Nine entities exist as of Milestone 3:
 
 - **Student** `(id, student_number, full_name)` — full name stored
   complete; any truncation (e.g. the legacy 3-token name) is a
   presentation concern for `reports/`, never applied to the stored value.
-- **Course** `(id, code, name)`
+- **Course** `(id, code, name)` — registration data is the source of
+  truth for courses; nothing else is ever allowed to create one (see
+  **Validation behavior**).
 - **Registration** `(id, student_id, course_id)` — the student↔course join.
-- **Exam** `(id, course_id, exam_date, time_slot)` — one scheduled sitting
-  of a course.
-- **Room** `(id, code, capacity)` — first-class now; the legacy
-  `input/locations.csv` shape was never actually wired into the old code.
+- **Exam** `(id, course_id, exam_date, time_slot, expected_student_count,
+  day_label)` — one scheduled sitting of a course on a given date and
+  time slot. `expected_student_count` is the exam's overall expected
+  headcount. `time_slot` is a normalized `"HH:MM-HH:MM"` string, not a
+  real time object — the source schedule data has no AM/PM marker, so
+  this is an honest representation rather than an invented one.
+  `day_label` is the raw, unvalidated "Day" text from the source row,
+  kept only for display — never cross-checked against the actual weekday
+  of `exam_date`.
+- **ExamRoom** `(id, exam_id, room_id, allocated_students)` — associates
+  one Exam with one Room and that room's scheduled student allocation.
+  **One Exam can have multiple ExamRoom records** — this is how a single
+  real-world exam that spans several rooms is represented; it was never
+  forced into a many-to-one Exam→Room relationship.
+- **Room** `(id, code, capacity)` — first-class; seeded from a CSV
+  matching the legacy `input/locations.csv` shape (`room, capacity`,
+  with an optional ignored `index` column), which the legacy code never
+  actually read.
 - **SeatingGeneration** `(id, exam_id, strategy_name, status,
   total_registered, total_assigned, total_unassigned, capacity_shortage,
   warnings, created_at)` — one identifiable, versioned run of a seating
@@ -121,28 +148,145 @@ reasoning on what was included vs. deferred):
   student_id, seat_number)` — one student's assigned room + running
   position for a generation.
 
-**Deliberately not modeled yet:**
+**Deliberately still not modeled (unchanged since the foundation
+milestone):**
 
 - **Seat** (a physical, addressable seat within a room) — nothing today
   needs seat-level identity; `SeatAssignment.seat_number` is a running
   integer, not a foreign key. Introduce a real `Seat` entity when a
   strategy actually needs seat adjacency (anti-cheating, layout-aware
-  constraints).
+  constraints). Milestone 3 did not add this even though it introduced
+  `ExamRoom` — room-level allocation and seat-level layout are different
+  concerns, and nothing yet needs the latter.
 - **Constraint** (a generic configurable rule) — no strategy exists yet
   that reads constraints. Designing a generic constraint schema now, with
   nothing to validate it against, would be speculative. `SeatingGeneration`
   is the extension point: it can carry a `config` payload once
   `ConstraintSeatingStrategy` defines what that payload needs to look like.
 
-## Seating strategy abstraction (design, not yet implemented)
+### Three numbers that must never collapse into one
+
+This is the audit's central finding about the legacy system, and the
+reason `Exam`, `ExamRoom`, and `Room` are three separate entities instead
+of one:
+
+| Value | Lives on | Meaning |
+|---|---|---|
+| `Exam.expected_student_count` | Exam | How many students the exam sitting as a whole is expected to have (the legacy CSV's "No. of Students" column, repeated on every room-row for that exam). |
+| `ExamRoom.allocated_students` | ExamRoom | How many students this *specific room* is scheduled to hold for this exam (the legacy CSV's "No. of Students/ Room" column, one value per room-row). |
+| `Room.capacity` | Room | The room's physical seating limit, independent of any exam. |
+
+The legacy system computed `min(No. of Students, No. of Students/ Room)`
+and only ever stored that one collapsed number. Milestone 3 preserves all
+three values exactly as imported, unmodified. This is what lets a future
+`SeatingEngine` validate "does the scheduled allocation fit the room's
+real capacity?" and "does the sum of scheduled allocations across a
+exam's rooms cover its expected headcount?" — questions the legacy data
+model could never answer because the numbers it needed had already been
+thrown away during import.
+
+## Data flow
+
+**Registration** (Milestone 2):
+```
+CSV upload → parser/validator (app/services/registration_import/parser.py)
+           → RegistrationImportService
+           → StudentRepository / CourseRepository / RegistrationRepository
+           → database (students, courses, registrations tables)
+```
+
+**Room** (Milestone 3):
+```
+CSV upload → room_import.py (parser + RoomImportService in one module —
+             a two-column, no-cross-reference import doesn't need the
+             parser/service split as separate files)
+           → RoomRepository
+           → database (rooms table)
+```
+
+**Schedule** (Milestone 3):
+```
+CSV upload → parser/validator (app/services/schedule_import/parser.py)
+           → ScheduleImportService
+           → CourseRepository (lookup only — never creates a Course)
+           → RoomRepository (lookup only — never creates a Room)
+           → ExamRepository / ExamRoomRepository
+           → database (exams, exam_rooms tables)
+```
+
+Every import follows the same shape: **API → parser/validator (pure,
+no DB) → service (orchestrates repositories) → repositories →
+database.** The parser never touches a database session; the service
+never parses CSV text or does I/O.
+
+## The schedule importer's responsibility (and what it explicitly does not do)
+
+**The schedule importer does not perform seating allocation.** It imports
+already-scheduled exam/room allocations exactly as they appear in the
+source CSV — the legacy spreadsheet-authoring process (or whatever
+produces the schedule CSV) has already decided which rooms an exam uses
+and how many students go in each one. `ScheduleImportService`'s job is
+purely to parse, validate, and persist that pre-existing decision as
+`Exam` + `ExamRoom` rows; it does not decide room counts, does not split
+students into rooms, and does not run any capacity-fitting logic beyond
+*flagging* (not correcting) a scheduled allocation that exceeds a room's
+capacity. Actually deciding "which students go in which seat" is the
+seating engine's job, and remains fully unimplemented (see below).
+
+## Validation behavior (current, as implemented)
+
+**Registration import:**
+- missing required column, blank required field, malformed CSV
+- duplicate registration row (same student+course repeated) — counted, not re-inserted
+- same student ID with a conflicting name — reported, stored name never overwritten
+- same course code with a conflicting name — reported, stored name never overwritten
+
+**Schedule import:**
+- missing required column, malformed CSV
+- malformed date (including a real legacy example: `input/day3.csv` has
+  an unconverted Excel serial number in one Date cell — reported as
+  malformed, never guessed at)
+- malformed time, invalid/negative student count, invalid/negative room allocation
+- **unknown course code** — the exam group is skipped and reported; the
+  course is never auto-created (registration data is the source of truth
+  for courses)
+- **unknown room code** — that room-row is skipped and reported; the
+  room is never auto-created
+- course-name conflict (schedule's Course Name vs. the already-stored
+  Course) — reported, stored name never overwritten
+- expected-student-count conflict (same exam, disagreeing room-rows, or
+  vs. an already-stored Exam) — reported, stored value never overwritten
+- exam-room allocation conflict (same exam+room, disagreeing rows, or
+  vs. an already-stored ExamRoom) — reported, stored value never overwritten
+- **room-capacity warning** — a room's scheduled allocation exceeding its
+  physical capacity is reported as a `warning`, not a blocking error: it's
+  a real fact about the source schedule (which the future seating engine
+  needs to know), not a reason to refuse importing it
+- exact-duplicate room-row — counted as a duplicate, not re-inserted
+
+**Room import:**
+- missing required column, invalid/negative capacity
+- conflicting capacity for an already-known room code — reported, stored
+  capacity never overwritten
+
+Across all three importers, nothing is ever silently dropped: every
+excluded row or disagreement is a reported `validation_errors` /
+`conflicts` / `warnings` entry, never a value that just quietly changes.
+
+## Seating strategy abstraction (design, still not implemented)
 
 This shape is approved and documented here so every later milestone
-builds toward it, but **no code exists in `app/seating/` yet** — it is
-explicitly out of scope for the foundation milestone.
+builds toward it, but **no code exists in `app/seating/` yet** —
+Milestone 3 explicitly did not implement it. What Milestone 3 *did* do is
+build the exact input the seating engine will consume: `Exam` (one
+sitting), `ExamRoom` (that sitting's rooms and their scheduled
+allocations), and registration/student data (who's meant to be in that
+exam). Nothing about how those students actually get assigned to seats
+exists yet.
 
 ```python
 class SeatingStrategy(ABC):
-    def generate(self, exam: Exam, students: list[Student], rooms: list[Room]) -> SeatingResult: ...
+    def generate(self, exam: Exam, exam_rooms: list[ExamRoom], students: list[Student]) -> SeatingResult: ...
 
 class SequentialSeatingStrategy(SeatingStrategy):
     """Fills rooms in the given order, taking the next N students in list
@@ -154,7 +298,15 @@ class SequentialSeatingStrategy(SeatingStrategy):
 
 class SeatingEngine:
     def __init__(self, strategy: SeatingStrategy): ...
-    def run(self, exam, students, rooms) -> SeatingResult: ...
+    def run(self, exam: Exam, exam_rooms: list[ExamRoom], students: list[Student]) -> SeatingResult: ...
+```
+
+```
+SeatingEngine
+  └── SeatingStrategy (interface)
+        ├── SequentialSeatingStrategy       (future milestone — not implemented)
+        ├── ConstraintSeatingStrategy       (future — not implemented)
+        └── OptimizationSeatingStrategy     (future — not implemented)
 ```
 
 `SeatingResult` will explicitly carry `assignments`, `unassigned_students`,
@@ -168,18 +320,34 @@ Future strategies (`ConstraintSeatingStrategy`,
 same `SeatingStrategy` interface and are selected by `strategy_name` at the
 service layer. Adding one requires: a new class in `app/seating/strategies/`
 implementing `generate()`, and a registry entry — no change to `api/`,
-`db/`, `repositories/`, or `frontend/`.
+`db/`, `repositories/`, `frontend/`, or the `Exam`/`ExamRoom` schema this
+milestone built.
 
 ## Persistence boundary
 
 - SQLite via SQLAlchemy 2.0 declarative models (`app/db/models.py`).
+  Milestone 3 added `expected_student_count` and `day_label` columns plus
+  a `UNIQUE(course_id, exam_date, time_slot)` constraint to the existing
+  `exams` table, and a new `exam_rooms` table
+  (`UNIQUE(exam_id, room_id)`).
 - `app/db/init_db.py` creates tables via `Base.metadata.create_all()`.
-  This is the appropriate mechanism for this stage: there is no schema
-  history to reconcile across environments yet. If/when the schema needs
-  versioned, reviewable migrations (multiple environments, real data
-  already in place), introduce Alembic then, as an additive change — not
-  before, since an empty migrations directory with a single "initial"
-  migration provides no real benefit over `create_all()` today.
+  This remains the appropriate mechanism for *new* tables: there is no
+  schema history to reconcile across environments yet.
+- **Schema-compatibility guard.** `create_all()` cannot alter a table
+  that already exists — it silently does nothing to it. Because
+  Milestone 3 added required columns to the already-shipped `exams`
+  table, `init_db()` now calls `check_schema_compatibility()` first,
+  which inspects any pre-existing `exams` table and raises
+  `SchemaCompatibilityError` — refusing to proceed — if it's missing a
+  column this milestone requires. **This guard is not a migration tool
+  and is not a replacement for one.** It does not alter, upgrade, or
+  transform an incompatible schema in any way; it only detects the
+  incompatible case and stops loudly instead of leaving the app to fail
+  later with a confusing "no such column" error, or silently running
+  against a half-stale schema. A real schema change against a database
+  that already holds data still requires an actual migration (e.g.
+  introducing Alembic at that point) — the guard exists so that need
+  becomes an explicit, safe stop rather than silent corruption.
 - Engine/session construction reads `DATABASE_URL` from `app.config.Settings`
   (environment-variable driven, prefix `APP_`, `.env`-file supported) —
   never a hardcoded path. A relative SQLite file path's parent directory
@@ -193,15 +361,18 @@ implementing `generate()`, and a registry entry — no change to `api/`,
 ## API boundary
 
 - FastAPI app factory (`create_app()` in `app/main.py`) rather than a
-  bare module-level app doing setup work at import time — keeps
-  construction free of side effects and makes it straightforward to
-  build a differently-configured app in tests.
-- Routers live in `app/api/`, one module per concern (`health.py` today).
-  A router depends on `services/`, never directly on `db/` models or
-  SQLAlchemy query construction, once `services/` exists.
-- The only endpoint today is `GET /health`, which also exercises the
-  database dependency (`SELECT 1`) so the health check is a real
-  end-to-end signal, not a hardcoded `{"status": "ok"}`.
+  bare module-level app doing setup work at import time. A `lifespan`
+  hook calls `init_db()` on startup (idempotent, and now guarded — see
+  above) so a fresh database is ready without a separate manual step.
+- Routers live in `app/api/`, one module per concern: `health.py`,
+  `registrations.py`, `schedules.py`, `exams.py`, `rooms.py`.
+- Current endpoints: `GET /health`, `POST /registrations/import`,
+  `GET /students`, `GET /courses`, `GET /registrations`,
+  `POST /schedules/import`, `GET /exams`, `GET /exams/{exam_id}`,
+  `POST /rooms/import`, `GET /rooms`. All list endpoints support
+  `limit`/`offset` pagination. No SQLAlchemy model or raw dict is ever
+  returned directly — every response is a Pydantic model in
+  `app/api/schemas.py`.
 
 ## Report boundary
 
@@ -230,20 +401,32 @@ generation doesn't need to know about HTTP or the database.
 - **Generation history/comparison**: `SeatingGeneration` already gives
   every run an identity; a comparison feature is a read-side
   service/endpoint over existing rows, not a schema change.
+- **Real schema migrations**: if a future schema change needs to run
+  against a database that already holds real data, introduce Alembic at
+  that point (see **Persistence boundary** — the current guard is a
+  safety stop, not a substitute for this).
 
 ## What is intentionally deferred
 
-Per the approved Phase 1 decisions, the following are **not** implemented
-yet, anywhere in the codebase:
+The following are **not** implemented yet, anywhere in the codebase:
 
-- Registration import, schedule import, seating generation, and report
-  generation *logic* (their module boundaries exist; their contents do
-  not).
-- `ConstraintSeatingStrategy`, `OptimizationSeatingStrategy`,
-  `MixedCourseSeatingStrategy`, and any constraint/rule engine.
-- A physical `Seat` entity or seat-map/layout visualization.
-- Generation history *comparison* UI.
+- **Seating generation** — no `SeatingEngine`, no `SeatingStrategy`
+  implementation (including `SequentialSeatingStrategy`), no code in
+  `app/seating/` at all. Milestone 3 built the Exam/ExamRoom data this
+  will consume, and nothing more.
+- A **physical Seat model** (seat-level identity/layout).
+- **Mixed-course seating.**
+- **Anti-cheating rules.**
+- A **constraint engine** (`ConstraintSeatingStrategy` and any generic
+  `Constraint` entity/schema).
+- An **optimization engine** (`OptimizationSeatingStrategy`).
+- **Advanced seating UI** (seat-map visualization, drag-and-drop).
+- **Generation comparison UI** (diffing/comparing `SeatingGeneration` runs).
+- **Report generation** *logic* (`app/reports/` module boundary exists;
+  its contents do not).
+- **Alembic** — the schema-compatibility guard added in Milestone 3 is a
+  safety mechanism, not a migration tool (see **Persistence boundary**);
+  Alembic itself remains unintroduced.
+- Redis, Celery, message queues, microservices, Kubernetes, PostgreSQL —
+  none are justified by current scale or requirements.
 - Authentication/authorization (not required by anything built so far).
-- Alembic, Redis, Celery, message queues, microservices, Kubernetes,
-  PostgreSQL — none are justified by current scale or requirements.
-- Any frontend page beyond the default Next.js shell page.
