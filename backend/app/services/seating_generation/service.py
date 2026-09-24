@@ -96,8 +96,11 @@ class SeatingService:
         return SeatingGenerationOutcome(
             generation=generation,
             scheduled_student_count=result.scheduled_student_count,
+            total_physical_capacity=result.total_physical_capacity,
             available_capacity=result.available_capacity,
             unassigned_student_ids=result.unassigned_student_ids,
+            scheduled_allocation_shortage=result.scheduled_allocation_shortage,
+            physical_capacity_shortage=result.physical_capacity_shortage,
         )
 
     def _load_room_allocations(self, exam_id: int) -> list[RoomAllocation]:

@@ -188,3 +188,79 @@ def test_result_is_deterministic_across_repeated_runs() -> None:
 
     assert first.assignments == second.assignments
     assert first.unassigned_student_ids == second.unassigned_student_ids
+
+
+# --- Precise shortage semantics: scheduled_allocation_shortage vs. --------
+# --- physical_capacity_shortage must be independently correct, not --------
+# --- just "some students ended up unassigned" (that's capacity_shortage). -
+
+
+def test_scheduled_allocation_shortage_without_physical_capacity_shortage() -> None:
+    """registered > scheduled allocation, but physical capacity would have
+    been sufficient — the schedule under-allocated, the rooms themselves
+    did not run out of physical space."""
+    strategy = SequentialSeatingStrategy()
+    students = _students(100)
+    room_allocations = [RoomAllocation(room_id=10, room_code="A", allocated_students=80, capacity=120)]
+
+    result = strategy.generate(EXAM, students, room_allocations)
+
+    assert result.scheduled_student_count == 80
+    assert result.total_physical_capacity == 120
+    assert result.scheduled_allocation_shortage is True
+    assert result.physical_capacity_shortage is False
+    # Still true that someone actually went unassigned this generation —
+    # a distinct, broader fact from *why*.
+    assert result.capacity_shortage is True
+    assert result.unassigned_student_count == 20
+
+
+def test_physical_capacity_shortage_without_scheduled_allocation_shortage() -> None:
+    """registered <= scheduled allocation, but the rooms physically
+    assigned cannot hold that many seats regardless of what was scheduled."""
+    strategy = SequentialSeatingStrategy()
+    students = _students(100)
+    room_allocations = [RoomAllocation(room_id=10, room_code="A", allocated_students=120, capacity=80)]
+
+    result = strategy.generate(EXAM, students, room_allocations)
+
+    assert result.scheduled_student_count == 120
+    assert result.total_physical_capacity == 80
+    assert result.scheduled_allocation_shortage is False
+    assert result.physical_capacity_shortage is True
+    assert result.capacity_shortage is True
+    assert result.unassigned_student_count == 20
+
+
+def test_both_shortages_simultaneously() -> None:
+    """registered exceeds both the scheduled allocation and the rooms'
+    total physical capacity — both flags must be true independently."""
+    strategy = SequentialSeatingStrategy()
+    students = _students(150)
+    room_allocations = [RoomAllocation(room_id=10, room_code="A", allocated_students=80, capacity=100)]
+
+    result = strategy.generate(EXAM, students, room_allocations)
+
+    assert result.scheduled_allocation_shortage is True
+    assert result.physical_capacity_shortage is True
+    assert result.capacity_shortage is True
+    # The algorithm only ever fills up to the capped, scheduled amount —
+    # physical capacity (100) here is not even the binding constraint.
+    assert result.assigned_student_count == 80
+    assert result.unassigned_student_count == 70
+
+
+def test_neither_shortage_when_registered_fits_within_both() -> None:
+    """registered <= scheduled allocation and <= physical capacity: no
+    shortage of either kind, and no one goes unassigned."""
+    strategy = SequentialSeatingStrategy()
+    students = _students(60)
+    room_allocations = [RoomAllocation(room_id=10, room_code="A", allocated_students=80, capacity=100)]
+
+    result = strategy.generate(EXAM, students, room_allocations)
+
+    assert result.scheduled_allocation_shortage is False
+    assert result.physical_capacity_shortage is False
+    assert result.capacity_shortage is False
+    assert result.unassigned_student_count == 0
+    assert result.status == GenerationStatus.SUCCESS

@@ -40,31 +40,56 @@ class SeatAssignmentRecord:
 class SeatingResult:
     """Output of a SeatingStrategy run.
 
-    Three distinct counts, never collapsed into one (see docs/architecture.md):
-    - `scheduled_student_count`: the schedule's own plan (sum of each
-      room's `allocated_students`, as scheduled — even if that number
-      exceeds the room's physical capacity).
-    - `available_capacity`: the actually-usable seats after protecting
-      against any room's allocation exceeding its own capacity
-      (sum of min(allocated_students, capacity) per room).
+    Counts, never collapsed into one another (see docs/architecture.md):
+    - `scheduled_student_count`: the schedule's own plan — sum of each
+      room's `allocated_students`, exactly as scheduled, even if that
+      number exceeds the room's physical capacity.
+    - `total_physical_capacity`: sum of each assigned room's `capacity`,
+      completely independent of what was scheduled — "how many seats
+      physically exist across the rooms assigned to this exam."
+    - `available_capacity`: the seats this generation actually tries to
+      fill — sum of min(allocated_students, capacity) per room. This is
+      an *operational* number (it drives the assignment loop below), not
+      a diagnostic one; see the two shortage flags for diagnosis.
     - `registered_student_count` / `assigned_student_count` /
       `unassigned_student_count`: who was supposed to be seated vs. who
       actually was.
 
-    `capacity_shortage` is true exactly when `unassigned_student_count > 0`
-    — in this model, a student is only ever left unassigned because there
-    were not enough usable seats for them (never assigned beyond a room's
-    physical capacity, never invented seats, never dropped without a seat
-    existing for someone else instead).
+    Two distinct shortage diagnoses — students can end up unassigned for
+    either reason, and conflating them (as a single `capacity_shortage`
+    flag once did) hides which one actually happened:
+    - `scheduled_allocation_shortage`: `registered_student_count >
+      scheduled_student_count`. The schedule simply didn't allocate
+      enough seats for this exam — independent of whether the rooms
+      involved could *physically* have held more. Fixable by scheduling
+      more/larger rooms; the rooms already assigned may have had room to
+      spare.
+    - `physical_capacity_shortage`: `registered_student_count >
+      total_physical_capacity`. Even using every seat in every room
+      assigned to this exam, there is nowhere for everyone to sit. Not
+      fixable without assigning additional or larger rooms.
+      A generation can have either flag true, both, or neither.
+
+    `capacity_shortage` is kept, **unchanged in meaning**, for
+    continuity with Milestone 4 and because it is what
+    `SeatingGeneration.capacity_shortage` persists: true exactly when
+    `unassigned_student_count > 0`, i.e. "at least one registered student
+    was not seated, for whatever reason." It answers "did anyone go
+    unassigned?"; the two flags above answer "why." Do not read
+    `capacity_shortage` as meaning "physical capacity was the cause" —
+    use `physical_capacity_shortage` for that specific claim.
     """
 
     status: GenerationStatus
     registered_student_count: int
     scheduled_student_count: int
+    total_physical_capacity: int
     available_capacity: int
     assigned_student_count: int
     unassigned_student_count: int
     capacity_shortage: bool
+    scheduled_allocation_shortage: bool
+    physical_capacity_shortage: bool
     assignments: list[SeatAssignmentRecord]
     unassigned_student_ids: list[int]
     warnings: list[str] = field(default_factory=list)

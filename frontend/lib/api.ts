@@ -127,8 +127,13 @@ export interface SeatingGenerationOut {
 
 export interface SeatingGenerationResult extends SeatingGenerationOut {
   scheduled_student_count: number;
+  total_physical_capacity: number;
   available_capacity: number;
   unassigned_student_ids: number[];
+  // capacity_shortage (inherited) only answers "did anyone go unassigned?".
+  // These two answer "why" and are not mutually exclusive.
+  scheduled_allocation_shortage: boolean;
+  physical_capacity_shortage: boolean;
 }
 
 export interface SeatAssignmentOut {

@@ -2,11 +2,13 @@
 
 This document describes the architecture of the modular Exam Seating
 Arrangement System as actually implemented through Milestone 3
-(Schedule & Exam Management, commit `94cb6ff`), and which parts remain
-designed-for but not yet built. It complements — and does not replace —
-the repository audit, which explains why the legacy
-`main.py`/`services/`/`models/`/`views/` script is being superseded
-rather than incrementally patched.
+(Schedule & Exam Management, commit `94cb6ff`), with the **Seating
+strategy abstraction** section additionally updated for Milestone 4
+(Seating Engine + Sequential Seating, commit `4b4f2a6`) — the rest of
+this document has not been re-synchronized against every Milestone 4
+change. It complements — and does not replace — the repository audit,
+which explains why the legacy `main.py`/`services/`/`models/`/`views/`
+script is being superseded rather than incrementally patched.
 
 ## Goals this architecture serves
 
@@ -273,20 +275,17 @@ Across all three importers, nothing is ever silently dropped: every
 excluded row or disagreement is a reported `validation_errors` /
 `conflicts` / `warnings` entry, never a value that just quietly changes.
 
-## Seating strategy abstraction (design, still not implemented)
+## Seating strategy abstraction (Milestone 4: SequentialSeatingStrategy implemented)
 
-This shape is approved and documented here so every later milestone
-builds toward it, but **no code exists in `app/seating/` yet** —
-Milestone 3 explicitly did not implement it. What Milestone 3 *did* do is
-build the exact input the seating engine will consume: `Exam` (one
-sitting), `ExamRoom` (that sitting's rooms and their scheduled
-allocations), and registration/student data (who's meant to be in that
-exam). Nothing about how those students actually get assigned to seats
-exists yet.
+`app/seating/` is populated as of Milestone 4. It has no dependency on
+FastAPI, SQLAlchemy, HTTP, the filesystem, ReportLab, or a repository —
+`SequentialSeatingStrategy`'s own test suite runs with none of those
+present, which is what proves the boundary actually holds.
 
 ```python
 class SeatingStrategy(ABC):
-    def generate(self, exam: Exam, exam_rooms: list[ExamRoom], students: list[Student]) -> SeatingResult: ...
+    name: str
+    def generate(self, exam: Exam, students: list[Student], room_allocations: list[RoomAllocation]) -> SeatingResult: ...
 
 class SequentialSeatingStrategy(SeatingStrategy):
     """Fills rooms in the given order, taking the next N students in list
@@ -294,34 +293,99 @@ class SequentialSeatingStrategy(SeatingStrategy):
     buildRoomsLists FIFO slicing — but, unlike the legacy code, it owns the
     capacity-fit decision itself rather than reading a pre-computed number
     from a schedule CSV column, and it never silently drops a student: any
-    student who doesn't fit becomes part of SeatingResult.unassigned."""
+    student who doesn't fit becomes part of SeatingResult.unassigned_student_ids."""
 
 class SeatingEngine:
     def __init__(self, strategy: SeatingStrategy): ...
-    def run(self, exam: Exam, exam_rooms: list[ExamRoom], students: list[Student]) -> SeatingResult: ...
+    def run(self, exam: Exam, students: list[Student], room_allocations: list[RoomAllocation]) -> SeatingResult: ...
 ```
+
+`RoomAllocation` is `app/seating/`'s own flattened join of `ExamRoom` +
+`Room` (room_id, room_code, allocated_students, capacity) — the strategy
+never queries a repository, so `app.services.seating_generation.SeatingService`
+builds this list before calling the engine.
 
 ```
 SeatingEngine
   └── SeatingStrategy (interface)
-        ├── SequentialSeatingStrategy       (future milestone — not implemented)
+        ├── SequentialSeatingStrategy       (Milestone 4 — implemented)
         ├── ConstraintSeatingStrategy       (future — not implemented)
         └── OptimizationSeatingStrategy     (future — not implemented)
 ```
 
-`SeatingResult` will explicitly carry `assignments`, `unassigned_students`,
-and `capacity_shortage` — the domain must always represent total
-registered vs. assigned vs. unassigned vs. capacity shortage as first-class
-facts (see `SeatingGeneration` above), never as something to infer from a
-diff of files, which was a real limitation of the legacy `left.json`.
-
 Future strategies (`ConstraintSeatingStrategy`,
 `OptimizationSeatingStrategy`, `MixedCourseSeatingStrategy`) implement the
 same `SeatingStrategy` interface and are selected by `strategy_name` at the
-service layer. Adding one requires: a new class in `app/seating/strategies/`
-implementing `generate()`, and a registry entry — no change to `api/`,
-`db/`, `repositories/`, `frontend/`, or the `Exam`/`ExamRoom` schema this
-milestone built.
+service layer (`app/seating/engine.py`'s registry). Adding one requires: a
+new class in `app/seating/strategies/` implementing `generate()`, and a
+registry entry — no change to `api/`, `db/`, `repositories/`, `frontend/`,
+or the `Exam`/`ExamRoom` schema.
+
+### Two distinct shortage diagnoses (not one ambiguous flag)
+
+`SeatingGeneration.capacity_shortage` (persisted, unchanged since
+Milestone 4) means exactly one thing: `unassigned_student_count > 0` —
+"did at least one registered student go unseated in this run, for
+whatever reason." It has never meant, and still does not mean, "the
+physical rooms were too small" specifically — that would be a different,
+narrower claim, and collapsing the two would recreate the same kind of
+ambiguity the legacy `min(expected, allocated)` truncation caused.
+
+`SeatingResult` (and the `POST /exams/{id}/seating/generate` response)
+carries two further, independent booleans that answer *why*:
+
+- `scheduled_allocation_shortage` = `registered_student_count >
+  scheduled_student_count`. The schedule's own plan didn't allocate
+  enough seats for this exam. This can be true even when the assigned
+  rooms had physical room to spare — it's a scheduling gap, not a room
+  problem.
+- `physical_capacity_shortage` = `registered_student_count >
+  total_physical_capacity` (sum of the assigned rooms' `Room.capacity`,
+  completely independent of what was scheduled). This can be true even
+  when the schedule "on paper" allocated more seats than there are
+  students — the rooms themselves don't have that many physical seats.
+
+Neither implies the other; a generation can have either, both, or
+neither true. These two flags are **not** persisted on
+`SeatingGeneration` — they're recomputed from a live run's
+`RoomAllocation` inputs and returned only in that run's API response
+(see `SeatingGenerationOutcome` in
+`app/services/seating_generation/records.py`). Persisting them is
+deliberately deferred until something needs to inspect a *past*
+generation's shortage reason, not just the one just run — adding the
+columns now, with nothing reading them back, would be speculative.
+
+### Deterministic ordering (why regeneration reproduces the same seating)
+
+Sequential seating is only useful if running it twice on the same data
+produces the same assignments — otherwise "regenerate" would be
+indistinguishable from "reshuffle." Two ordering decisions make that true:
+
+- **Students**: `SeatingService._load_registered_students` sorts the
+  course's registered students by `(len(student_number), student_number)`
+  before handing them to the strategy — comparing length first avoids the
+  lexicographic-sort bug that would otherwise misorder numeric IDs of
+  different digit-lengths (e.g. `"9001"` sorting after `"10001"`). The
+  legacy system never guaranteed this: `main.py` simply consumed whatever
+  order the registration CSV happened to be in, which was an accident of
+  the export, not a designed property. Sorting explicitly by student
+  number also preserves something the legacy PDF "ID range per room"
+  reports depended on implicitly — a contiguous ID range per room is only
+  a meaningful summary if the students were processed in ID order to
+  begin with.
+- **Rooms**: `SqlAlchemyExamRoomRepository.list_by_exam` orders explicitly
+  by `ExamRoomModel.id` (ascending, i.e. insertion/import order) rather
+  than relying on the database's unspecified default row order. Since the
+  strategy fills rooms strictly in the order it's given them, an
+  unordered query would make the room-fill sequence — and therefore which
+  student ends up in which room — dependent on incidental database
+  behavior instead of the schedule's own original room order.
+
+Together, these two decisions are what make `test_result_is_deterministic_across_repeated_runs`
+(`backend/tests/seating/test_sequential_strategy.py`) and the
+regenerate-twice HTTP smoke test both hold: identical input always
+produces identical `SeatAssignmentRecord`s, in both content and per-room
+seat numbering.
 
 ## Persistence boundary
 
@@ -410,10 +474,10 @@ generation doesn't need to know about HTTP or the database.
 
 The following are **not** implemented yet, anywhere in the codebase:
 
-- **Seating generation** — no `SeatingEngine`, no `SeatingStrategy`
-  implementation (including `SequentialSeatingStrategy`), no code in
-  `app/seating/` at all. Milestone 3 built the Exam/ExamRoom data this
-  will consume, and nothing more.
+- **Constraint- and optimization-based seating** — `SeatingEngine` and
+  `SeatingStrategy` exist, and `SequentialSeatingStrategy` is implemented
+  (Milestone 4). `ConstraintSeatingStrategy` and
+  `OptimizationSeatingStrategy` do not exist yet.
 - A **physical Seat model** (seat-level identity/layout).
 - **Mixed-course seating.**
 - **Anti-cheating rules.**

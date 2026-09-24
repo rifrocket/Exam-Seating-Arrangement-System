@@ -189,11 +189,15 @@ export default function ExamDetailPage() {
                   </div>
                   <div className={styles.summaryCard}>
                     <div className={styles.value}>{latest.scheduled_student_count}</div>
-                    <div className={styles.label}>Scheduled</div>
+                    <div className={styles.label}>Scheduled allocation</div>
+                  </div>
+                  <div className={styles.summaryCard}>
+                    <div className={styles.value}>{latest.total_physical_capacity}</div>
+                    <div className={styles.label}>Physical capacity</div>
                   </div>
                   <div className={styles.summaryCard}>
                     <div className={styles.value}>{latest.available_capacity}</div>
-                    <div className={styles.label}>Available capacity</div>
+                    <div className={styles.label}>Seats used this run</div>
                   </div>
                   <div className={styles.summaryCard}>
                     <div className={styles.value}>{latest.total_assigned}</div>
@@ -207,8 +211,28 @@ export default function ExamDetailPage() {
 
                 {latest.capacity_shortage && (
                   <div className={styles.errorBanner} role="alert">
-                    Capacity shortage: {latest.total_unassigned} student(s)
-                    could not be seated.
+                    <p>
+                      {latest.total_unassigned} student(s) could not be
+                      seated. Reason(s):
+                    </p>
+                    <ul className={styles.issueList}>
+                      {latest.scheduled_allocation_shortage && (
+                        <li>
+                          Scheduled allocation shortage — {latest.total_registered}{" "}
+                          registered vs. {latest.scheduled_student_count} seat(s)
+                          scheduled. The rooms may have had physical room to
+                          spare; the schedule simply didn&apos;t allocate enough.
+                        </li>
+                      )}
+                      {latest.physical_capacity_shortage && (
+                        <li>
+                          Physical capacity shortage — the rooms assigned to
+                          this exam have only {latest.total_physical_capacity}{" "}
+                          physical seat(s) total, regardless of what was
+                          scheduled.
+                        </li>
+                      )}
+                    </ul>
                   </div>
                 )}
 

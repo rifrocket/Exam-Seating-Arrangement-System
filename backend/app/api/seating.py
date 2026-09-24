@@ -77,8 +77,11 @@ def generate_seating(
     return SeatingGenerationResponse(
         **base.model_dump(),
         scheduled_student_count=outcome.scheduled_student_count,
+        total_physical_capacity=outcome.total_physical_capacity,
         available_capacity=outcome.available_capacity,
         unassigned_student_ids=outcome.unassigned_student_ids,
+        scheduled_allocation_shortage=outcome.scheduled_allocation_shortage,
+        physical_capacity_shortage=outcome.physical_capacity_shortage,
     )
 
 

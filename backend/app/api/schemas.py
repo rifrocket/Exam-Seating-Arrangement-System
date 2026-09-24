@@ -173,8 +173,13 @@ class SeatingGenerationOut(BaseModel):
 
 class SeatingGenerationResponse(SeatingGenerationOut):
     scheduled_student_count: int
+    total_physical_capacity: int
     available_capacity: int
     unassigned_student_ids: list[int]
+    # `capacity_shortage` (inherited above) only answers "did anyone go
+    # unassigned?" — these two answer "why," and are not mutually exclusive.
+    scheduled_allocation_shortage: bool
+    physical_capacity_shortage: bool
 
 
 class SeatingGenerationListResponse(BaseModel):

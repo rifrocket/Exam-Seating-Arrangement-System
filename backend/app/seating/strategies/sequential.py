@@ -10,7 +10,10 @@ Legacy behavior deliberately NOT preserved:
   takes an ordered list and returns a result; the input is never mutated.
 - No collapsing `min(expected_student_count, allocated_students)` into a
   single number — `registered_student_count`, `scheduled_student_count`,
-  and `available_capacity` are kept as three distinct, reported figures.
+  `total_physical_capacity`, and `available_capacity` are kept as
+  distinct, reported figures (see SeatingResult's docstring), and
+  "why students went unassigned" is reported as two distinct shortage
+  flags rather than one ambiguous `capacity_shortage` boolean.
 - No silent truncation. Every registered student is either assigned or
   explicitly listed as unassigned; nothing merely "doesn't appear."
 """
@@ -35,6 +38,7 @@ class SequentialSeatingStrategy(SeatingStrategy):
 
         registered_student_count = len(students)
         scheduled_student_count = sum(ra.allocated_students for ra in room_allocations)
+        total_physical_capacity = sum(ra.capacity for ra in room_allocations)
 
         warnings: list[str] = []
         usable_targets: list[tuple[int, int]] = []  # (room_id, seats actually fillable)
@@ -77,7 +81,15 @@ class SequentialSeatingStrategy(SeatingStrategy):
         unassigned_student_count = len(unassigned_students)
         unassigned_student_ids = [s.id for s in unassigned_students if s.id is not None]
 
+        # Three independent facts — see SeatingResult's docstring for why
+        # these must not be collapsed into each other:
+        #  - did anyone actually go unassigned in this generation? (capacity_shortage)
+        #  - was the *schedule's own plan* insufficient? (scheduled_allocation_shortage)
+        #  - was the *physical room capacity* insufficient, regardless of
+        #    what the schedule allocated? (physical_capacity_shortage)
         capacity_shortage = unassigned_student_count > 0
+        scheduled_allocation_shortage = registered_student_count > scheduled_student_count
+        physical_capacity_shortage = registered_student_count > total_physical_capacity
 
         if registered_student_count == 0:
             status = GenerationStatus.SUCCESS
@@ -93,10 +105,13 @@ class SequentialSeatingStrategy(SeatingStrategy):
             status=status,
             registered_student_count=registered_student_count,
             scheduled_student_count=scheduled_student_count,
+            total_physical_capacity=total_physical_capacity,
             available_capacity=available_capacity,
             assigned_student_count=assigned_student_count,
             unassigned_student_count=unassigned_student_count,
             capacity_shortage=capacity_shortage,
+            scheduled_allocation_shortage=scheduled_allocation_shortage,
+            physical_capacity_shortage=physical_capacity_shortage,
             assignments=assignments,
             unassigned_student_ids=unassigned_student_ids,
             warnings=warnings,
