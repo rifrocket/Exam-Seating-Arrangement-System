@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { StatusBadge } from "@/components/ui/Badge";
 import { Button, LinkButton } from "@/components/ui/Button";
 import { Card, CardHeader, StatCard } from "@/components/ui/Card";
@@ -48,6 +48,7 @@ export default function ExamDetailPage() {
   const [viewedGenerationId, setViewedGenerationId] = useState<number | null>(null);
   const [viewedAssignments, setViewedAssignments] = useState<SeatAssignmentOut[]>([]);
   const [viewError, setViewError] = useState<string | null>(null);
+  const viewedSectionRef = useRef<HTMLDivElement>(null);
 
   async function loadExam() {
     try {
@@ -104,6 +105,14 @@ export default function ExamDetailPage() {
       setViewError(err instanceof Error ? err.message : String(err));
     }
   }
+
+  // The clicked row can be far above where its result renders on a long
+  // page, so without this, clicking "View" looks like nothing happened.
+  useEffect(() => {
+    if (viewedGenerationId !== null || viewError) {
+      viewedSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }, [viewedGenerationId, viewError]);
 
   const totalAllocated = exam?.exam_rooms.reduce((sum, er) => sum + er.allocated_students, 0) ?? 0;
   const totalCapacity = exam?.exam_rooms.reduce((sum, er) => sum + er.room_capacity, 0) ?? 0;
@@ -364,20 +373,22 @@ export default function ExamDetailPage() {
                   </Tbody>
                 </Table>
 
-                {viewError && (
-                  <div className="p-4">
-                    <ErrorState message={viewError} />
-                  </div>
-                )}
+                <div ref={viewedSectionRef}>
+                  {viewError && (
+                    <div className="p-4">
+                      <ErrorState message={viewError} />
+                    </div>
+                  )}
 
-                {viewedGenerationId !== null && (
-                  <div className="border-t border-border p-5">
-                    <AssignmentsViewer
-                      title={`Assignments for generation #${viewedGenerationId}`}
-                      assignments={viewedAssignments}
-                    />
-                  </div>
-                )}
+                  {viewedGenerationId !== null && (
+                    <div className="border-t border-border p-5">
+                      <AssignmentsViewer
+                        title={`Assignments for generation #${viewedGenerationId}`}
+                        assignments={viewedAssignments}
+                      />
+                    </div>
+                  )}
+                </div>
               </>
             )}
           </Card>
