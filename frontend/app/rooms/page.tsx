@@ -1,146 +1,133 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { Card } from "@/components/ui/Card";
+import { CsvImportButton } from "@/components/ui/CsvImportButton";
+import { ImportSummary } from "@/components/ui/ImportSummary";
+import { PageHeader } from "@/components/ui/PageHeader";
+import { SearchInput } from "@/components/ui/SearchInput";
+import { EmptyState, ErrorState, TableSkeleton } from "@/components/ui/States";
+import { Table, Tbody, Td, Th, Thead, Tr } from "@/components/ui/Table";
 import { RoomImportResult, RoomOut, fetchRooms, importRoomsCsv } from "@/lib/api";
-import styles from "./page.module.css";
 
 export default function RoomsPage() {
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [isUploading, setIsUploading] = useState(false);
-  const [uploadError, setUploadError] = useState<string | null>(null);
   const [result, setResult] = useState<RoomImportResult | null>(null);
+  const [importError, setImportError] = useState<string | null>(null);
 
   const [rooms, setRooms] = useState<RoomOut[]>([]);
-  const [roomsTotal, setRoomsTotal] = useState(0);
+  const [total, setTotal] = useState(0);
+  const [isLoading, setIsLoading] = useState(true);
   const [listError, setListError] = useState<string | null>(null);
+  const [filter, setFilter] = useState("");
 
-  async function refreshRooms() {
+  async function load() {
+    setIsLoading(true);
+    setListError(null);
     try {
       const page = await fetchRooms(200, 0);
       setRooms(page.items);
-      setRoomsTotal(page.meta.total);
-      setListError(null);
+      setTotal(page.meta.total);
     } catch (error) {
       setListError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsLoading(false);
     }
   }
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    refreshRooms();
+    load();
   }, []);
 
-  async function handleImport() {
-    if (!selectedFile) return;
-    setIsUploading(true);
-    setUploadError(null);
-    setResult(null);
-    try {
-      const importResult = await importRoomsCsv(selectedFile);
-      setResult(importResult);
-      await refreshRooms();
-    } catch (error) {
-      setUploadError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setIsUploading(false);
-    }
-  }
+  const filtered = useMemo(() => {
+    const query = filter.trim().toLowerCase();
+    if (!query) return rooms;
+    return rooms.filter((r) => r.code.toLowerCase().includes(query));
+  }, [rooms, filter]);
 
   return (
-    <div className={styles.page}>
-      <div className={styles.header}>
-        <h1>Rooms</h1>
-        <p>Seed rooms from a CSV (matching input/locations.csv: room, capacity).</p>
-      </div>
-
-      <section>
-        <div className={styles.uploadRow}>
-          <input
-            type="file"
-            accept=".csv,text/csv"
-            onChange={(event) =>
-              setSelectedFile(event.target.files?.[0] ?? null)
-            }
+    <div className="flex flex-col gap-6">
+      <PageHeader
+        title="Rooms"
+        description="Manage exam rooms and their capacities"
+        action={
+          <CsvImportButton
+            label="Import CSV"
+            onImport={importRoomsCsv}
+            onResult={(res) => {
+              setResult(res);
+              setImportError(null);
+              load();
+            }}
+            onError={setImportError}
           />
-          <button
-            type="button"
-            onClick={handleImport}
-            disabled={!selectedFile || isUploading}
-          >
-            {isUploading ? "Importing…" : "Import"}
-          </button>
-        </div>
+        }
+      />
 
-        {uploadError && (
-          <div className={styles.errorBanner} role="alert">
-            {uploadError}
-          </div>
-        )}
+      {importError && <ErrorState message={importError} />}
 
-        {result && (
-          <div>
-            <p>
-              Status: {result.status} — {result.rooms_created} created,{" "}
-              {result.rooms_existing} existing
-            </p>
-
-            {result.validation_errors.length > 0 && (
-              <ul className={styles.issueList}>
-                {result.validation_errors.map((issue, index) => (
-                  <li key={index}>
-                    {issue.line_number != null
-                      ? `Line ${issue.line_number}: `
-                      : ""}
-                    {issue.message}
-                  </li>
-                ))}
-              </ul>
-            )}
-
-            {result.conflicts.length > 0 && (
-              <ul className={styles.issueList}>
-                {result.conflicts.map((conflict, index) => (
-                  <li key={index}>
-                    Line {conflict.line_number}: room &quot;{conflict.key}
-                    &quot; — stored capacity {conflict.existing_value} vs
-                    incoming {conflict.incoming_value}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        )}
-      </section>
-
-      {listError && (
-        <div className={styles.errorBanner} role="alert">
-          {listError}
-        </div>
+      {result && (
+        <ImportSummary
+          status={result.status}
+          stats={[
+            { label: "Rows read", value: result.rows_read },
+            { label: "Rooms created", value: result.rooms_created },
+            { label: "Rooms existing", value: result.rooms_existing },
+            { label: "Duplicate rows", value: result.duplicate_rows },
+          ]}
+          validationErrors={result.validation_errors}
+          conflicts={result.conflicts}
+        />
       )}
 
-      <section>
-        <h2>Rooms ({roomsTotal})</h2>
-        {rooms.length === 0 ? (
-          <p className={styles.empty}>No rooms imported yet.</p>
+      <Card>
+        <div className="flex flex-col gap-3 border-b border-border p-4 sm:flex-row sm:items-center sm:justify-between">
+          <span className="text-sm font-semibold text-text-primary">
+            {total} room{total === 1 ? "" : "s"}
+          </span>
+          <SearchInput
+            value={filter}
+            onChange={setFilter}
+            placeholder="Search by room code…"
+          />
+        </div>
+
+        {listError ? (
+          <div className="p-6">
+            <ErrorState message={listError} onRetry={load} />
+          </div>
+        ) : isLoading ? (
+          <TableSkeleton rows={6} columns={2} />
+        ) : rooms.length === 0 ? (
+          <div className="p-6">
+            <EmptyState
+              title="No rooms imported yet"
+              description="Import a CSV with room and capacity columns (matching input/locations.csv)."
+            />
+          </div>
+        ) : filtered.length === 0 ? (
+          <div className="p-6">
+            <EmptyState title="No rooms match your search" />
+          </div>
         ) : (
-          <table className={styles.dataTable}>
-            <thead>
-              <tr>
-                <th>Room</th>
-                <th>Capacity</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rooms.map((room) => (
-                <tr key={room.id}>
-                  <td>{room.code}</td>
-                  <td>{room.capacity}</td>
-                </tr>
+          <Table>
+            <Thead>
+              <Tr>
+                <Th>Room</Th>
+                <Th>Capacity</Th>
+              </Tr>
+            </Thead>
+            <Tbody>
+              {filtered.map((room) => (
+                <Tr key={room.id}>
+                  <Td className="font-medium text-text-primary">{room.code}</Td>
+                  <Td>{room.capacity}</Td>
+                </Tr>
               ))}
-            </tbody>
-          </table>
+            </Tbody>
+          </Table>
         )}
-      </section>
+      </Card>
     </div>
   );
 }

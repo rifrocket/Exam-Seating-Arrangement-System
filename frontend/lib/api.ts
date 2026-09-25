@@ -277,6 +277,38 @@ export async function fetchAssignments(
   return response.json();
 }
 
+export interface ExamWithGenerations {
+  exam: ExamOut;
+  generations: SeatingGenerationOut[]; // ascending by creation order
+  latest: SeatingGenerationOut | null;
+}
+
+/**
+ * Composes two already-existing endpoints (GET /exams, GET
+ * /exams/{id}/seating/generations) into one cross-exam view — there is no
+ * backend endpoint that lists generations across all exams, and this
+ * milestone is frontend-only, so this is assembled client-side instead of
+ * adding one. Capped at `examLimit` exams (default matches the schedule
+ * page's existing limit); at MVP scale this covers everything, but a
+ * future deployment with more exams than that would see a partial view.
+ */
+export async function fetchExamsWithGenerations(
+  examLimit = 100,
+): Promise<ExamWithGenerations[]> {
+  const examsPage = await fetchExams(examLimit, 0);
+  return Promise.all(
+    examsPage.items.map(async (exam) => {
+      const generationsPage = await fetchGenerations(exam.id);
+      const generations = generationsPage.items;
+      return {
+        exam,
+        generations,
+        latest: generations.length > 0 ? generations[generations.length - 1] : null,
+      };
+    }),
+  );
+}
+
 // Plain URLs, not fetch wrappers — these are meant to be used directly as
 // <a href> targets so the browser handles the PDF response itself
 // (Content-Disposition: inline lets it display in a new tab).

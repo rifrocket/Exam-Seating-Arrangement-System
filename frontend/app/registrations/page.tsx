@@ -1,6 +1,13 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Card, CardHeader, StatCard } from "@/components/ui/Card";
+import { CsvImportButton } from "@/components/ui/CsvImportButton";
+import { ImportSummary } from "@/components/ui/ImportSummary";
+import { Pagination } from "@/components/ui/Pagination";
+import { PageHeader } from "@/components/ui/PageHeader";
+import { EmptyState, ErrorState, TableSkeleton } from "@/components/ui/States";
+import { Table, Tbody, Td, Th, Thead, Tr } from "@/components/ui/Table";
 import {
   CourseOut,
   RegistrationImportResult,
@@ -9,241 +16,194 @@ import {
   fetchStudents,
   importRegistrationsCsv,
 } from "@/lib/api";
-import styles from "./page.module.css";
 
-const STATUS_CLASS: Record<RegistrationImportResult["status"], string> = {
-  success: styles.statusSuccess,
-  partial: styles.statusPartial,
-  failed: styles.statusFailed,
-};
+const PAGE_SIZE = 10;
 
 export default function RegistrationsPage() {
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [isUploading, setIsUploading] = useState(false);
-  const [uploadError, setUploadError] = useState<string | null>(null);
   const [result, setResult] = useState<RegistrationImportResult | null>(null);
+  const [importError, setImportError] = useState<string | null>(null);
 
   const [students, setStudents] = useState<StudentOut[]>([]);
   const [studentsTotal, setStudentsTotal] = useState(0);
+  const [studentsOffset, setStudentsOffset] = useState(0);
+
   const [courses, setCourses] = useState<CourseOut[]>([]);
   const [coursesTotal, setCoursesTotal] = useState(0);
+  const [coursesOffset, setCoursesOffset] = useState(0);
+
+  const [isLoading, setIsLoading] = useState(true);
   const [listError, setListError] = useState<string | null>(null);
 
-  async function refreshLists() {
+  async function loadStudents(offset: number) {
+    const page = await fetchStudents(PAGE_SIZE, offset);
+    setStudents(page.items);
+    setStudentsTotal(page.meta.total);
+    setStudentsOffset(offset);
+  }
+
+  async function loadCourses(offset: number) {
+    const page = await fetchCourses(PAGE_SIZE, offset);
+    setCourses(page.items);
+    setCoursesTotal(page.meta.total);
+    setCoursesOffset(offset);
+  }
+
+  async function loadAll() {
+    setIsLoading(true);
+    setListError(null);
     try {
-      const [studentsPage, coursesPage] = await Promise.all([
-        fetchStudents(50, 0),
-        fetchCourses(50, 0),
-      ]);
-      setStudents(studentsPage.items);
-      setStudentsTotal(studentsPage.meta.total);
-      setCourses(coursesPage.items);
-      setCoursesTotal(coursesPage.meta.total);
-      setListError(null);
+      await Promise.all([loadStudents(0), loadCourses(0)]);
     } catch (error) {
       setListError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsLoading(false);
     }
   }
 
   useEffect(() => {
-    // Load-on-mount from the backend API. There's no data-fetching library
-    // in this project yet (deliberately, per the milestone scope), so this
-    // is the plain fetch-in-effect pattern the new react-hooks rule below
-    // is generally right to discourage in favor of one — not applicable here.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    refreshLists();
+    loadAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function handleImport() {
-    if (!selectedFile) return;
-    setIsUploading(true);
-    setUploadError(null);
-    setResult(null);
-    try {
-      const importResult = await importRegistrationsCsv(selectedFile);
-      setResult(importResult);
-      await refreshLists();
-    } catch (error) {
-      setUploadError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setIsUploading(false);
-    }
-  }
-
   return (
-    <div className={styles.page}>
-      <div className={styles.header}>
-        <h1>Registrations</h1>
-        <p>Import a registration CSV and verify the resulting data.</p>
+    <div className="flex flex-col gap-6">
+      <PageHeader
+        title="Student Registrations"
+        description="Import and manage student course registrations"
+        action={
+          <CsvImportButton
+            label="Import CSV"
+            onImport={importRegistrationsCsv}
+            onResult={(res) => {
+              setResult(res);
+              setImportError(null);
+              loadAll();
+            }}
+            onError={setImportError}
+          />
+        }
+      />
+
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <StatCard label="Total Students" value={studentsTotal} tone="brand" />
+        <StatCard label="Total Courses" value={coursesTotal} tone="success" />
+        <StatCard
+          label="Total Registrations"
+          value={result ? result.registrations_created + result.registrations_existing : "—"}
+          tone="warning"
+        />
       </div>
 
-      <section>
-        <div className={styles.uploadRow}>
-          <input
-            type="file"
-            accept=".csv,text/csv"
-            onChange={(event) =>
-              setSelectedFile(event.target.files?.[0] ?? null)
-            }
-          />
-          <button
-            type="button"
-            onClick={handleImport}
-            disabled={!selectedFile || isUploading}
-          >
-            {isUploading ? "Importing…" : "Import"}
-          </button>
-        </div>
+      {importError && <ErrorState message={importError} />}
 
-        {uploadError && (
-          <div className={styles.errorBanner} role="alert">
-            {uploadError}
-          </div>
-        )}
-
-        {result && (
-          <div>
-            <p>
-              Status:{" "}
-              <span
-                className={`${styles.statusBadge} ${STATUS_CLASS[result.status]}`}
-              >
-                {result.status}
-              </span>
-            </p>
-
-            <div className={styles.summaryGrid}>
-              <SummaryCard label="Rows read" value={result.rows_read} />
-              <SummaryCard
-                label="Students created"
-                value={result.students_created}
-              />
-              <SummaryCard
-                label="Students existing"
-                value={result.students_existing}
-              />
-              <SummaryCard
-                label="Courses created"
-                value={result.courses_created}
-              />
-              <SummaryCard
-                label="Courses existing"
-                value={result.courses_existing}
-              />
-              <SummaryCard
-                label="Registrations created"
-                value={result.registrations_created}
-              />
-              <SummaryCard
-                label="Registrations existing"
-                value={result.registrations_existing}
-              />
-              <SummaryCard
-                label="Duplicate rows"
-                value={result.duplicate_rows}
-              />
-            </div>
-
-            {result.validation_errors.length > 0 && (
-              <>
-                <h3>Validation errors ({result.validation_errors.length})</h3>
-                <ul className={styles.issueList}>
-                  {result.validation_errors.map((issue, index) => (
-                    <li key={index}>
-                      {issue.line_number != null
-                        ? `Line ${issue.line_number}: `
-                        : ""}
-                      {issue.field ? `[${issue.field}] ` : ""}
-                      {issue.message}
-                    </li>
-                  ))}
-                </ul>
-              </>
-            )}
-
-            {result.conflicts.length > 0 && (
-              <>
-                <h3>Conflicts ({result.conflicts.length})</h3>
-                <ul className={styles.issueList}>
-                  {result.conflicts.map((conflict, index) => (
-                    <li key={index}>
-                      Line {conflict.line_number}: {conflict.kind} for &quot;
-                      {conflict.key}&quot; — stored &quot;
-                      {conflict.existing_value}&quot; vs incoming &quot;
-                      {conflict.incoming_value}&quot;
-                    </li>
-                  ))}
-                </ul>
-              </>
-            )}
-          </div>
-        )}
-      </section>
-
-      {listError && (
-        <div className={styles.errorBanner} role="alert">
-          {listError}
-        </div>
+      {result && (
+        <ImportSummary
+          status={result.status}
+          stats={[
+            { label: "Rows read", value: result.rows_read },
+            { label: "Students created", value: result.students_created },
+            { label: "Students existing", value: result.students_existing },
+            { label: "Courses created", value: result.courses_created },
+            { label: "Courses existing", value: result.courses_existing },
+            { label: "Registrations created", value: result.registrations_created },
+            { label: "Registrations existing", value: result.registrations_existing },
+            { label: "Duplicate rows", value: result.duplicate_rows },
+          ]}
+          validationErrors={result.validation_errors}
+          conflicts={result.conflicts}
+        />
       )}
 
-      <section className={styles.tablesGrid}>
-        <div>
-          <h2>Students ({studentsTotal})</h2>
-          {students.length === 0 ? (
-            <p className={styles.empty}>No students imported yet.</p>
-          ) : (
-            <table className={styles.dataTable}>
-              <thead>
-                <tr>
-                  <th>Student ID</th>
-                  <th>Name</th>
-                </tr>
-              </thead>
-              <tbody>
-                {students.map((student) => (
-                  <tr key={student.id}>
-                    <td>{student.student_number}</td>
-                    <td>{student.full_name}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
+      {listError && <ErrorState message={listError} onRetry={loadAll} />}
 
-        <div>
-          <h2>Courses ({coursesTotal})</h2>
-          {courses.length === 0 ? (
-            <p className={styles.empty}>No courses imported yet.</p>
+      <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
+        <Card>
+          <CardHeader title="Students" description={`${studentsTotal} total`} />
+          {isLoading ? (
+            <TableSkeleton />
+          ) : students.length === 0 ? (
+            <div className="p-6">
+              <EmptyState
+                title="No students imported yet"
+                description="Import a registration CSV to populate students and courses."
+              />
+            </div>
           ) : (
-            <table className={styles.dataTable}>
-              <thead>
-                <tr>
-                  <th>Code</th>
-                  <th>Name</th>
-                </tr>
-              </thead>
-              <tbody>
-                {courses.map((course) => (
-                  <tr key={course.id}>
-                    <td>{course.code}</td>
-                    <td>{course.name}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <>
+              <Table>
+                <Thead>
+                  <Tr>
+                    <Th>Student ID</Th>
+                    <Th>Name</Th>
+                  </Tr>
+                </Thead>
+                <Tbody>
+                  {students.map((student) => (
+                    <Tr key={student.id}>
+                      <Td className="font-mono text-xs text-text-secondary">
+                        {student.student_number}
+                      </Td>
+                      <Td className="font-medium text-text-primary">
+                        {student.full_name}
+                      </Td>
+                    </Tr>
+                  ))}
+                </Tbody>
+              </Table>
+              <Pagination
+                total={studentsTotal}
+                limit={PAGE_SIZE}
+                offset={studentsOffset}
+                onPageChange={loadStudents}
+              />
+            </>
           )}
-        </div>
-      </section>
-    </div>
-  );
-}
+        </Card>
 
-function SummaryCard({ label, value }: { label: string; value: number }) {
-  return (
-    <div className={styles.summaryCard}>
-      <div className={styles.value}>{value}</div>
-      <div className={styles.label}>{label}</div>
+        <Card>
+          <CardHeader title="Courses" description={`${coursesTotal} total`} />
+          {isLoading ? (
+            <TableSkeleton columns={2} />
+          ) : courses.length === 0 ? (
+            <div className="p-6">
+              <EmptyState
+                title="No courses imported yet"
+                description="Courses are created automatically from registration data."
+              />
+            </div>
+          ) : (
+            <>
+              <Table>
+                <Thead>
+                  <Tr>
+                    <Th>Code</Th>
+                    <Th>Name</Th>
+                  </Tr>
+                </Thead>
+                <Tbody>
+                  {courses.map((course) => (
+                    <Tr key={course.id}>
+                      <Td className="font-mono text-xs text-text-secondary">
+                        {course.code}
+                      </Td>
+                      <Td className="font-medium text-text-primary">
+                        {course.name}
+                      </Td>
+                    </Tr>
+                  ))}
+                </Tbody>
+              </Table>
+              <Pagination
+                total={coursesTotal}
+                limit={PAGE_SIZE}
+                offset={coursesOffset}
+                onPageChange={loadCourses}
+              />
+            </>
+          )}
+        </Card>
+      </div>
     </div>
   );
 }
