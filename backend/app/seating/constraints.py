@@ -24,6 +24,18 @@ ReportLab, or a repository. `SeparateCoursesConstraint` takes a plain
 it — it does not look courses up itself. This is *not* mixed-course
 seating support: nothing here changes how `Exam`/`ExamRoom`/`SeatingService`
 allocate a single course's students into rooms.
+
+`StudentSeatingContext` (Milestone 7) is the minimum per-student
+attribute set a constraint might need — never a generic metadata dict,
+never a SQLAlchemy model, and never fetched by the constraint itself.
+Only `course_id` exists today because only `SeparateCoursesConstraint`
+needs one; add a field only when a real constraint needs it.
+
+Constraints that compare two students' positions (`StudentsNotAdjacentConstraint`,
+`SeparateCoursesConstraint`) take a `Mapping[int, SeatTopology]` keyed by
+`room_id` rather than one `SeatTopology`, because a real seating spans
+multiple rooms and each room can have its own layout — a single shared
+topology instance would be wrong for any exam with more than one room.
 """
 
 from abc import ABC, abstractmethod
@@ -31,6 +43,12 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from app.seating.topology import SeatAssignmentCandidate, SeatTopology
+
+
+@dataclass(frozen=True)
+class StudentSeatingContext:
+    student_id: int
+    course_id: int
 
 
 class Constraint(ABC):
@@ -127,17 +145,21 @@ class StudentsNotAdjacentConstraint(HardConstraint):
     in adjacent seats (e.g. known collaborators, or students who must be
     kept apart for any other reason a future admin workflow decides)."""
 
-    def __init__(self, student_a_id: int, student_b_id: int, topology: SeatTopology) -> None:
+    def __init__(self, student_a_id: int, student_b_id: int, topologies: Mapping[int, SeatTopology]) -> None:
         self._student_a_id = student_a_id
         self._student_b_id = student_b_id
-        self._topology = topology
+        self._topologies = topologies
 
     def is_satisfied(self, assignments: Sequence[SeatAssignmentCandidate]) -> bool:
         a = _find_candidate(assignments, self._student_a_id)
         b = _find_candidate(assignments, self._student_b_id)
         if a is None or b is None:
             return True  # nothing to violate until both are actually seated
-        return not self._topology.is_adjacent(a.position, b.position)
+        # Different rooms can never be adjacent, and a room's own topology
+        # already encodes that (is_adjacent checks room_id equality first)
+        # — looking `a`'s room up is enough regardless of which room `b` is in.
+        topology = self._topologies[a.position.room_id]
+        return not topology.is_adjacent(a.position, b.position)
 
     def describe(self) -> str:
         return f"Student {self._student_a_id} and student {self._student_b_id} must not sit adjacent to each other."
@@ -150,14 +172,15 @@ class SeparateCoursesConstraint(SoftConstraint):
     students belong to different courses. `student_course_ids` is supplied
     by the caller; this constraint never looks a course up itself."""
 
-    def __init__(self, student_course_ids: Mapping[int, int], topology: SeatTopology) -> None:
+    def __init__(self, student_course_ids: Mapping[int, int], topologies: Mapping[int, SeatTopology]) -> None:
         self._student_course_ids = student_course_ids
-        self._topology = topology
+        self._topologies = topologies
 
     def is_satisfied(self, assignments: Sequence[SeatAssignmentCandidate]) -> bool:
         for i, a in enumerate(assignments):
             for b in assignments[i + 1 :]:
-                if not self._topology.is_adjacent(a.position, b.position):
+                topology = self._topologies[a.position.room_id]
+                if not topology.is_adjacent(a.position, b.position):
                     continue
                 course_a = self._student_course_ids.get(a.student_id)
                 course_b = self._student_course_ids.get(b.student_id)

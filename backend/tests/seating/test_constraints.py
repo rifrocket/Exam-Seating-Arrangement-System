@@ -7,11 +7,15 @@ from app.seating.constraints import (
     StudentsNotAdjacentConstraint,
     evaluate_constraints,
 )
-from app.seating.topology import RectangularRoomTopology, SeatAssignmentCandidate
+from app.seating.topology import RectangularRoomTopology, SeatAssignmentCandidate, SeatTopology
 
 
 def _layout() -> RectangularRoomTopology:
     return RectangularRoomTopology(room_id=1, rows=2, columns=5)
+
+
+def _topologies(layout: RectangularRoomTopology) -> dict[int, SeatTopology]:
+    return {layout.room_id: layout}
 
 
 def _candidate(layout: RectangularRoomTopology, student_id: int, seat_number: int) -> SeatAssignmentCandidate:
@@ -20,7 +24,7 @@ def _candidate(layout: RectangularRoomTopology, student_id: int, seat_number: in
 
 def test_hard_constraint_satisfied_when_students_not_adjacent() -> None:
     layout = _layout()
-    constraint = StudentsNotAdjacentConstraint(student_a_id=1, student_b_id=2, topology=layout)
+    constraint = StudentsNotAdjacentConstraint(student_a_id=1, student_b_id=2, topologies=_topologies(layout))
     assignments = [_candidate(layout, 1, 1), _candidate(layout, 2, 10)]  # opposite corners
 
     assert constraint.is_satisfied(assignments) is True
@@ -28,7 +32,7 @@ def test_hard_constraint_satisfied_when_students_not_adjacent() -> None:
 
 def test_hard_constraint_violated_when_students_adjacent() -> None:
     layout = _layout()
-    constraint = StudentsNotAdjacentConstraint(student_a_id=1, student_b_id=2, topology=layout)
+    constraint = StudentsNotAdjacentConstraint(student_a_id=1, student_b_id=2, topologies=_topologies(layout))
     assignments = [_candidate(layout, 1, 1), _candidate(layout, 2, 2)]  # neighboring seats
 
     assert constraint.is_satisfied(assignments) is False
@@ -36,7 +40,7 @@ def test_hard_constraint_violated_when_students_adjacent() -> None:
 
 def test_hard_constraint_is_vacuously_satisfied_before_both_students_are_seated() -> None:
     layout = _layout()
-    constraint = StudentsNotAdjacentConstraint(student_a_id=1, student_b_id=2, topology=layout)
+    constraint = StudentsNotAdjacentConstraint(student_a_id=1, student_b_id=2, topologies=_topologies(layout))
     assignments = [_candidate(layout, 1, 1)]  # student 2 not placed yet
 
     assert constraint.is_satisfied(assignments) is True
@@ -44,7 +48,7 @@ def test_hard_constraint_is_vacuously_satisfied_before_both_students_are_seated(
 
 def test_soft_constraint_satisfied_when_adjacent_students_share_a_course() -> None:
     layout = _layout()
-    constraint = SeparateCoursesConstraint(student_course_ids={1: 100, 2: 100}, topology=layout)
+    constraint = SeparateCoursesConstraint(student_course_ids={1: 100, 2: 100}, topologies=_topologies(layout))
     assignments = [_candidate(layout, 1, 1), _candidate(layout, 2, 2)]
 
     assert constraint.is_satisfied(assignments) is True
@@ -52,7 +56,7 @@ def test_soft_constraint_satisfied_when_adjacent_students_share_a_course() -> No
 
 def test_soft_constraint_violated_when_adjacent_students_differ_in_course() -> None:
     layout = _layout()
-    constraint = SeparateCoursesConstraint(student_course_ids={1: 100, 2: 200}, topology=layout)
+    constraint = SeparateCoursesConstraint(student_course_ids={1: 100, 2: 200}, topologies=_topologies(layout))
     assignments = [_candidate(layout, 1, 1), _candidate(layout, 2, 2)]
 
     assert constraint.is_satisfied(assignments) is False
@@ -60,7 +64,7 @@ def test_soft_constraint_violated_when_adjacent_students_differ_in_course() -> N
 
 def test_soft_constraint_satisfied_when_different_course_students_are_not_adjacent() -> None:
     layout = _layout()
-    constraint = SeparateCoursesConstraint(student_course_ids={1: 100, 2: 200}, topology=layout)
+    constraint = SeparateCoursesConstraint(student_course_ids={1: 100, 2: 200}, topologies=_topologies(layout))
     assignments = [_candidate(layout, 1, 1), _candidate(layout, 2, 10)]
 
     assert constraint.is_satisfied(assignments) is True
@@ -68,7 +72,7 @@ def test_soft_constraint_satisfied_when_different_course_students_are_not_adjace
 
 def test_evaluate_constraints_reports_satisfied_with_no_violations() -> None:
     layout = _layout()
-    hard = StudentsNotAdjacentConstraint(student_a_id=1, student_b_id=2, topology=layout)
+    hard = StudentsNotAdjacentConstraint(student_a_id=1, student_b_id=2, topologies=_topologies(layout))
     constraint_set = ConstraintSet(hard_constraints=(hard,))
     assignments = [_candidate(layout, 1, 1), _candidate(layout, 2, 10)]
 
@@ -80,7 +84,7 @@ def test_evaluate_constraints_reports_satisfied_with_no_violations() -> None:
 
 def test_evaluate_constraints_reports_hard_violation_and_unsatisfied() -> None:
     layout = _layout()
-    hard = StudentsNotAdjacentConstraint(student_a_id=1, student_b_id=2, topology=layout)
+    hard = StudentsNotAdjacentConstraint(student_a_id=1, student_b_id=2, topologies=_topologies(layout))
     constraint_set = ConstraintSet(hard_constraints=(hard,))
     assignments = [_candidate(layout, 1, 1), _candidate(layout, 2, 2)]
 
@@ -97,7 +101,7 @@ def test_evaluate_constraints_soft_violation_never_flips_satisfied() -> None:
     make the whole seating unacceptable — that's exactly what
     distinguishes it from a hard constraint."""
     layout = _layout()
-    soft = SeparateCoursesConstraint(student_course_ids={1: 100, 2: 200}, topology=layout)
+    soft = SeparateCoursesConstraint(student_course_ids={1: 100, 2: 200}, topologies=_topologies(layout))
     constraint_set = ConstraintSet(soft_constraints=(soft,))
     assignments = [_candidate(layout, 1, 1), _candidate(layout, 2, 2)]
 
@@ -110,9 +114,9 @@ def test_evaluate_constraints_soft_violation_never_flips_satisfied() -> None:
 
 def test_evaluate_constraints_with_multiple_hard_and_soft_constraints() -> None:
     layout = _layout()
-    hard_ok = StudentsNotAdjacentConstraint(student_a_id=1, student_b_id=2, topology=layout)
-    hard_violated = StudentsNotAdjacentConstraint(student_a_id=3, student_b_id=4, topology=layout)
-    soft_violated = SeparateCoursesConstraint(student_course_ids={3: 100, 4: 200}, topology=layout)
+    hard_ok = StudentsNotAdjacentConstraint(student_a_id=1, student_b_id=2, topologies=_topologies(layout))
+    hard_violated = StudentsNotAdjacentConstraint(student_a_id=3, student_b_id=4, topologies=_topologies(layout))
+    soft_violated = SeparateCoursesConstraint(student_course_ids={3: 100, 4: 200}, topologies=_topologies(layout))
     constraint_set = ConstraintSet(
         hard_constraints=(hard_ok, hard_violated),
         soft_constraints=(soft_violated,),

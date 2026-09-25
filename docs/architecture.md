@@ -170,15 +170,16 @@ milestone):**
   Introduce a real, persisted `Seat` entity only when a non-rectangular or
   admin-editable layout is actually needed.
 - **Constraint** as a *generic, database-configurable* rule (e.g. a JSON
-  schema an admin edits through the UI) — no strategy reads constraints
-  yet, and designing a database-backed generic rule schema now, with
-  nothing to validate it against, would be speculative. Milestone 6 added
-  typed Python `Constraint`/`HardConstraint`/`SoftConstraint` classes (see
-  **Constraint seating foundation** above) — that is not the same thing:
-  it's a fixed set of small classes in code, not a schema anyone
-  configures at runtime. `SeatingGeneration` remains the extension point
-  for a persisted `config` payload once `ConstraintSeatingStrategy` itself
-  defines what that payload needs to look like.
+  schema an admin edits through the UI) — `ConstraintSeatingStrategy`
+  (Milestone 7) does now read and evaluate constraints during generation,
+  but only the fixed, in-code default described in **Constraint seating
+  strategy** above; there is still no database-backed generic rule schema,
+  and designing one now, with only one real caller, would be speculative.
+  Milestone 6's typed Python `Constraint`/`HardConstraint`/`SoftConstraint`
+  classes are not the same thing as a configurable schema: they're a fixed
+  set of small classes in code. `SeatingGeneration` remains the extension
+  point for a persisted `config` payload once there's an actual need for
+  an admin to configure constraints per generation.
 
 ### Three numbers that must never collapse into one
 
@@ -401,28 +402,32 @@ regenerate-twice HTTP smoke test both hold: identical input always
 produces identical `SeatAssignmentRecord`s, in both content and per-room
 seat numbering.
 
-## Constraint seating foundation (Milestone 6: foundation only, no strategy yet)
+## Constraint seating foundation (Milestone 6, consumed by Milestone 7)
 
-Milestone 6 adds the domain layer a future `ConstraintSeatingStrategy` will
-need. **Nothing described in this section is wired into `SeatingEngine`,
-any registered strategy, or the API yet** — `get_strategy("constraint")`
-still raises `UnknownStrategyError` exactly as before; the registry in
-`app/seating/engine.py` is unchanged. This section documents foundation,
-not a shipped feature:
+Milestone 6 added the domain layer `ConstraintSeatingStrategy` (Milestone
+7 — see **Constraint seating strategy** below) is built on. At the time
+Milestone 6 shipped, none of it was wired into `SeatingEngine` or the API;
+Milestone 7 is what actually registers and uses it. This section documents
+the foundation types themselves; see the next section for the strategy
+that consumes them:
 
 ```
-Current (implemented, unchanged):
+Current (implemented, unchanged since Milestone 4):
 SeatingStrategy
   └── SequentialSeatingStrategy
 
-Foundation (implemented this milestone, not yet used by any strategy):
+Foundation (Milestone 6), now consumed by ConstraintSeatingStrategy:
 SeatTopology / RectangularRoomTopology   (app/seating/topology.py)
 Constraint / HardConstraint / SoftConstraint,
-ConstraintSet, ConstraintEvaluation,
+ConstraintSet, ConstraintEvaluation, StudentSeatingContext,
 evaluate_constraints()                   (app/seating/constraints.py)
 
+Implemented (Milestone 7):
+ConstraintSeatingStrategy                (app/seating/strategies/constraint.py)
+RoomTopologyProvider / StaticRoomTopologyProvider
+                                          (app/seating/topology_provider.py)
+
 Future (not implemented):
-ConstraintSeatingStrategy
 OptimizationSeatingStrategy
 ```
 
@@ -470,6 +475,18 @@ a severity flag:
   `Exam`/`ExamRoom`/`SeatingService` allocate a single course's students
   has changed.
 
+Both constraints take a `Mapping[int, SeatTopology]` keyed by `room_id`
+(added in Milestone 7), not a single `SeatTopology` — a real seating spans
+multiple rooms, each potentially with its own layout, so a constraint
+comparing two students' positions must resolve the right topology for
+whichever room each one is actually in.
+
+`StudentSeatingContext` (student_id + course_id) is the minimum per-student
+attribute set a constraint might need, built by the strategy itself from
+`Exam`/`Student` — never a generic metadata dict, never looked up by a
+constraint directly, and never a SQLAlchemy model. Add a field to it only
+when a real constraint needs one.
+
 `ConstraintSet` groups a run's hard and soft constraints. This is
 deliberately not a generic rule language or DSL — adding a new constraint
 means writing one small class implementing `HardConstraint` or
@@ -483,12 +500,8 @@ is a pure function checking one proposed (student_id -> position) seating
 against a `ConstraintSet`. `ConstraintEvaluation.satisfied` answers only
 "is this seating acceptable at all" — true iff there are no hard-constraint
 violations; a soft-constraint violation is recorded in `violations` (via
-`soft_violations`) but never flips `satisfied` to False. This is the
-building block a future `ConstraintSeatingStrategy` calls once per
-candidate seating it considers — it does not yet exist, and section 7 of
-the Milestone 6 spec is explicit that it should not be built prematurely:
-a placeholder that silently behaved like sequential seating would be worse
-than no strategy at all.
+`soft_violations`) but never flips `satisfied` to False. `ConstraintSeatingStrategy`
+(Milestone 7, below) calls this once per candidate seating it considers.
 
 Like the rest of `app/seating/`, `topology.py` and `constraints.py` import
 nothing from FastAPI, SQLAlchemy, ReportLab, a repository, or `app.api`/
@@ -496,6 +509,112 @@ nothing from FastAPI, SQLAlchemy, ReportLab, a repository, or `app.api`/
 `backend/tests/seating/test_constraint_foundation_boundaries.py`, which
 parses each module's imports directly rather than relying on whatever
 happens to already be loaded in `sys.modules`).
+
+## Constraint seating strategy (Milestone 7: implemented)
+
+`ConstraintSeatingStrategy` is registered in `app/seating/engine.py`'s
+`_STRATEGIES` registry exactly like `SequentialSeatingStrategy` —
+`get_strategy("constraint")` now returns a real, working strategy instead
+of raising `UnknownStrategyError`, and `POST /exams/{id}/seating/generate`
+accepts `{"strategy": "constraint"}` with **no API code change**, since
+the endpoint already forwarded `strategy_name` to `get_strategy()` before
+this milestone existed.
+
+### RoomTopologyProvider (`app/seating/topology_provider.py`)
+
+`Room` only ever stores a `code` and a physical `capacity` — it has no
+rows/columns, and inferring geometry from capacity alone (e.g. "capacity
+10 implies 2x5") would fabricate a physical fact the data doesn't have;
+two 10-seat rooms can have completely different real layouts.
+`RoomTopologyProvider` is the abstract boundary between "a room" and "a
+`SeatTopology`":
+
+```python
+class RoomTopologyProvider(ABC):
+    def get_topology(self, room_id: int, room_code: str, capacity: int) -> SeatTopology: ...
+```
+
+`StaticRoomTopologyProvider` is the only implementation so far: a plain,
+caller-supplied `room_code -> (rows, columns)` mapping, kept purely in
+memory — no database table, no admin UI. It **validates** that the
+configured layout's seat count exactly equals the room's actual
+`capacity`, raising `RoomTopologyMismatchError` if not (never silently
+truncating a layout or padding it with extra seats), and raises
+`UnknownRoomTopologyError` for any room code it wasn't given a layout
+for — there is no fallback guess.
+
+`ConstraintSeatingStrategy`'s own zero-argument constructor (needed
+because `get_strategy()` calls `strategy_cls()` with no arguments) uses
+`DEFAULT_DEMO_ROOM_LAYOUTS = {"401": (2, 5), "402": (2, 5)}` — an explicit,
+in-memory, demo-only configuration chosen to match this project's own
+sample rooms. **Any exam using a room code outside this mapping raises
+`UnknownRoomTopologyError` when generated with `strategy="constraint"`** —
+this is a real, current limitation of this milestone, not a bug: real,
+admin-configurable room layouts are future work (see **What is
+intentionally deferred**).
+
+### The constructive algorithm
+
+Not a solver — no OR-Tools, CP-SAT, ILP, backtracking, or randomness.
+`ConstraintSeatingStrategy.generate()`:
+
+1. Builds the same room-then-seat-number candidate list
+   `SequentialSeatingStrategy` would fill (preserving room order and
+   per-room seat numbering exactly), but each candidate now carries a
+   `SeatPosition` (row/column) from that room's `SeatTopology`.
+2. For each student, in the given (already deterministic) order: scans
+   remaining seats in that same order, keeps only the ones where adding
+   this placement to what's already been placed keeps every hard
+   constraint satisfied (`evaluate_constraints(...).satisfied`), and
+   among the survivors picks the one with the fewest soft-constraint
+   violations — ties broken by whichever qualifying seat came first in
+   order, so the result is deterministic.
+3. A student with no surviving candidate goes unassigned; the algorithm
+   continues with the next student rather than failing the whole run.
+
+This is a simple greedy heuristic, not a complete algorithm: it is **not**
+guaranteed to find a feasible seating even when one exists (a different
+assignment order could occasionally succeed where this one leaves someone
+unassigned). That trade-off is intentional for this milestone — the
+constraint model needs to prove itself before any solver is chosen.
+
+**When given an empty `ConstraintSet`**, every candidate always has zero
+violations, so the very first (room-then-seat-order) candidate always
+wins — which is exactly `SequentialSeatingStrategy`'s own fill order.
+`test_constraint_strategy.py::test_matches_sequential_strategy_when_there_are_no_constraints`
+asserts the two strategies produce byte-identical assignments in that
+case.
+
+`ConstraintSeatingStrategy`'s default (`constraint_set=None`, as opposed
+to an explicitly empty `ConstraintSet()`) auto-builds one
+`SeparateCoursesConstraint` from a `StudentSeatingContext` per registered
+student. In production today this is always trivially satisfied — every
+student in a single-course exam shares the same `course_id`, since mixed-
+course seating does not exist — but it does exercise the real
+constraint-evaluation code path on every generation, rather than leaving
+it entirely untested against live data.
+
+### Capacity semantics are unchanged
+
+`scheduled_allocation_shortage` and `physical_capacity_shortage` are
+computed identically to `SequentialSeatingStrategy` — from the same raw
+registered/scheduled/physical-capacity counts, independent of how the
+constructive algorithm actually placed students. A student going
+unassigned because every remaining seat violated a hard constraint is a
+distinct fact — a **constraint** shortfall, not a **capacity** one — and
+is reported only as an additional entry in `SeatingResult.warnings`
+("N student(s) could not be seated because every remaining seat violated
+a hard constraint"), never by reinterpreting either shortage flag or
+`SeatingGeneration.capacity_shortage`. No new field was added to
+`SeatingResult` for this — the existing `warnings: list[str]` mechanism
+was judged sufficient (see Phase 7 spec, section 10).
+
+### Frontend
+
+The exam detail page (`frontend/app/exams/[examId]/page.tsx`) gained a
+minimal `Strategy: [Sequential ▼]` selector next to "Generate Seating",
+offering only `Sequential` and `Constraint` — `Optimization` is
+deliberately not listed, since it doesn't exist. No other UI changed.
 
 ## Persistence boundary
 
@@ -667,22 +786,32 @@ paths exist under `/reports/`.
 
 The following are **not** implemented yet, anywhere in the codebase:
 
-- **Constraint- and optimization-based seating** — `SeatingEngine` and
-  `SeatingStrategy` exist, and `SequentialSeatingStrategy` is implemented
-  (Milestone 4). Milestone 6 added the constraint/topology *foundation*
-  (see **Constraint seating foundation** above), but `ConstraintSeatingStrategy`
-  and `OptimizationSeatingStrategy` themselves — the strategies that would
-  actually use that foundation to solve a seating — do not exist yet, and
-  no solver (OR-Tools, CP-SAT, ILP, or otherwise) has been chosen.
-- A **persisted physical Seat model** (a database-backed seat-level
-  layout/editor). A pure, in-memory seat topology exists as of Milestone 6
-  (`SeatPosition` / `RectangularRoomTopology`), but there is no seat
-  database table, layout editor, or frontend seat map.
-- **Mixed-course seating.**
-- **Anti-cheating rules** as an actual seating behavior — `SoftConstraint`/
-  `HardConstraint` types exist (Milestone 6) with one example of each, but
-  nothing evaluates them against a real generation yet.
-- An **optimization engine** (`OptimizationSeatingStrategy`).
+- **Optimization-based seating** — `ConstraintSeatingStrategy` (Milestone
+  7) is a deterministic greedy heuristic, not a solver: no OR-Tools,
+  CP-SAT, ILP, backtracking, or randomness, and it is not guaranteed to
+  find a feasible seating even when one exists. `OptimizationSeatingStrategy`
+  itself does not exist, and no solver has been chosen — the constraint
+  model needs to prove itself first.
+- **Persisted, admin-configurable room layouts** — `RoomTopologyProvider`
+  (Milestone 7, `app/seating/topology_provider.py`) is a real, working
+  abstraction, but its only implementation (`StaticRoomTopologyProvider`)
+  is a fixed, in-memory `room_code -> (rows, columns)` mapping
+  (`DEFAULT_DEMO_ROOM_LAYOUTS`) covering exactly two demo room codes
+  ("401", "402"). There is no seat database table, no layout editor, and
+  no frontend seat map; generating with `strategy="constraint"` for any
+  other room code raises `UnknownRoomTopologyError` today.
+- **Mixed-course seating.** `StudentSeatingContext.course_id` (Milestone 7)
+  exists because `SeparateCoursesConstraint` needs a course id per
+  student, not because mixed-course exams are supported — every student
+  passed into a strategy today still comes from the same single-course
+  `Exam`.
+- **Constraint management / admin-configurable constraints** —
+  `HardConstraint`/`SoftConstraint` (Milestone 6) are real, working types,
+  and `ConstraintSeatingStrategy` (Milestone 7) actually evaluates them
+  during generation, but there is no UI or persistence for an admin to
+  define which specific students should (or shouldn't) sit together;
+  today's default constraint set is built entirely in code
+  (`_build_student_seating_contexts` in `strategies/constraint.py`).
 - **Advanced seating UI** (seat-map visualization, drag-and-drop).
 - **Generation comparison UI** (diffing/comparing `SeatingGeneration` runs
   side by side — each generation's own report is available (Milestone 5),

@@ -8,11 +8,13 @@ Nothing else in the app (API, db, repositories, frontend) changes.
 
 from app.domain import Exam, Student
 from app.seating.models import RoomAllocation, SeatingResult
+from app.seating.strategies.constraint import ConstraintSeatingStrategy
 from app.seating.strategies.sequential import SequentialSeatingStrategy
 from app.seating.strategy import SeatingStrategy
 
 _STRATEGIES: dict[str, type[SeatingStrategy]] = {
     SequentialSeatingStrategy.name: SequentialSeatingStrategy,
+    ConstraintSeatingStrategy.name: ConstraintSeatingStrategy,
 }
 
 

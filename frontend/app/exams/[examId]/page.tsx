@@ -40,6 +40,7 @@ export default function ExamDetailPage() {
   const [error, setError] = useState<string | null>(null);
 
   const [generations, setGenerations] = useState<SeatingGenerationOut[]>([]);
+  const [strategy, setStrategy] = useState<"sequential" | "constraint">("sequential");
   const [isGenerating, setIsGenerating] = useState(false);
   const [generateError, setGenerateError] = useState<string | null>(null);
   const [latest, setLatest] = useState<SeatingGenerationResult | null>(null);
@@ -82,7 +83,7 @@ export default function ExamDetailPage() {
     setIsGenerating(true);
     setGenerateError(null);
     try {
-      const result = await generateSeating(examId);
+      const result = await generateSeating(examId, strategy);
       setLatest(result);
       setViewedGenerationId(null);
       const assignmentPage = await fetchAssignments(result.id);
@@ -215,15 +216,29 @@ export default function ExamDetailPage() {
           <Card>
             <CardHeader
               title="Generate Seating"
-              description="Create a new seating arrangement using the sequential strategy"
+              description="Create a new seating arrangement using the selected strategy"
               action={
-                <Button
-                  onClick={handleGenerate}
-                  loading={isGenerating}
-                  icon={<Play className="h-4 w-4" />}
-                >
-                  {isGenerating ? "Generating…" : "Generate Seating"}
-                </Button>
+                <div className="flex items-center gap-2">
+                  <label className="flex items-center gap-2 text-xs text-text-secondary">
+                    Strategy:
+                    <select
+                      value={strategy}
+                      onChange={(e) => setStrategy(e.target.value as "sequential" | "constraint")}
+                      disabled={isGenerating}
+                      className="rounded-md border border-border bg-white px-2 py-1 text-xs text-text-primary focus:border-brand-500 focus:outline-none disabled:opacity-50"
+                    >
+                      <option value="sequential">Sequential</option>
+                      <option value="constraint">Constraint</option>
+                    </select>
+                  </label>
+                  <Button
+                    onClick={handleGenerate}
+                    loading={isGenerating}
+                    icon={<Play className="h-4 w-4" />}
+                  >
+                    {isGenerating ? "Generating…" : "Generate Seating"}
+                  </Button>
+                </div>
               }
             />
 
