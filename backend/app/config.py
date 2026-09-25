@@ -23,8 +23,18 @@ class Settings(BaseSettings):
     # Emit SQL statements to stdout; useful in local dev only.
     sql_echo: bool = False
 
-    # Origins allowed to call the API (the frontend dev server by default).
-    cors_origins: list[str] = ["http://localhost:3000"]
+    # Origins allowed to call the API. Browsers treat "localhost" and
+    # "127.0.0.1" as different origins even on the same port, and CORS
+    # failures are silent from the app's point of view (fetch() just
+    # rejects with a generic network error) — so both dev hostnames are
+    # allowed by default rather than assuming which one a developer's
+    # browser will actually show in its address bar. Override via
+    # APP_CORS_ORIGINS (a JSON array, e.g. '["https://admin.example.com"]')
+    # for any origin beyond local development.
+    cors_origins: list[str] = [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ]
 
 
 @lru_cache

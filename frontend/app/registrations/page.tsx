@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { Card, CardHeader, StatCard } from "@/components/ui/Card";
 import { CsvImportButton } from "@/components/ui/CsvImportButton";
+import { DownloadSampleButton } from "@/components/ui/DownloadSampleButton";
 import { ImportSummary } from "@/components/ui/ImportSummary";
 import { Pagination } from "@/components/ui/Pagination";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -16,6 +17,7 @@ import {
   fetchStudents,
   importRegistrationsCsv,
 } from "@/lib/api";
+import { buildSampleRegistrationsCsv } from "@/lib/sampleData";
 
 const PAGE_SIZE = 10;
 
@@ -72,16 +74,22 @@ export default function RegistrationsPage() {
         title="Student Registrations"
         description="Import and manage student course registrations"
         action={
-          <CsvImportButton
-            label="Import CSV"
-            onImport={importRegistrationsCsv}
-            onResult={(res) => {
-              setResult(res);
-              setImportError(null);
-              loadAll();
-            }}
-            onError={setImportError}
-          />
+          <>
+            <DownloadSampleButton
+              filename="sample-registrations.csv"
+              buildContent={buildSampleRegistrationsCsv}
+            />
+            <CsvImportButton
+              label="Import CSV"
+              onImport={importRegistrationsCsv}
+              onResult={(res) => {
+                setResult(res);
+                setImportError(null);
+                loadAll();
+              }}
+              onError={setImportError}
+            />
+          </>
         }
       />
 

@@ -1,7 +1,8 @@
 "use client";
 
-import { Menu, UserCircle } from "lucide-react";
-import { usePathname } from "next/navigation";
+import { LogOut, Menu, UserCircle } from "lucide-react";
+import { useRouter, usePathname } from "next/navigation";
+import { useState } from "react";
 import { NAV_ITEMS } from "./Sidebar";
 
 function currentSectionLabel(pathname: string): string {
@@ -13,7 +14,19 @@ function currentSectionLabel(pathname: string): string {
 
 export function Topbar({ onMenuClick }: { onMenuClick: () => void }) {
   const pathname = usePathname();
+  const router = useRouter();
   const label = currentSectionLabel(pathname);
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
+
+  async function handleLogout() {
+    setIsLoggingOut(true);
+    try {
+      await fetch("/api/auth/logout", { method: "POST" });
+    } finally {
+      router.replace("/login");
+      router.refresh();
+    }
+  }
 
   return (
     <header className="sticky top-0 z-20 flex h-16 shrink-0 items-center gap-3 border-b border-border bg-surface-card/95 px-4 backdrop-blur sm:px-6">
@@ -32,9 +45,20 @@ export function Topbar({ onMenuClick }: { onMenuClick: () => void }) {
         </span>
       </div>
 
-      <div className="flex shrink-0 items-center gap-2 text-sm text-text-secondary">
-        <UserCircle className="h-6 w-6" />
-        <span className="hidden sm:inline">Administrator</span>
+      <div className="flex shrink-0 items-center gap-3 text-sm text-text-secondary">
+        <span className="hidden items-center gap-2 sm:flex">
+          <UserCircle className="h-6 w-6" />
+          Administrator
+        </span>
+        <button
+          type="button"
+          onClick={handleLogout}
+          disabled={isLoggingOut}
+          className="flex items-center gap-1.5 rounded-md px-2 py-1.5 text-text-secondary hover:bg-surface hover:text-text-primary disabled:opacity-50"
+        >
+          <LogOut className="h-4 w-4" />
+          <span className="hidden sm:inline">Logout</span>
+        </button>
       </div>
     </header>
   );

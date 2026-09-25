@@ -171,11 +171,45 @@ async function readErrorDetail(response: Response): Promise<string> {
   }
 }
 
+const REQUEST_TIMEOUT_MS = 15_000;
+
+/**
+ * Every network call in this file goes through here. This is a resilience
+ * measure, not a substitute for fixing a known root cause: it guarantees
+ * that *any* hung request — a misconfigured CORS origin silently blocking
+ * the browser from ever settling the promise the way some environments
+ * behave, a backend that's mid-restart, a flaky network — surfaces as a
+ * clear, catchable error within a bounded time instead of leaving a page's
+ * loading state stuck forever. Callers still see a normal rejected
+ * promise; no error is swallowed or hidden here.
+ */
+async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    return await fetch(`${API_BASE_URL}${path}`, {
+      ...init,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error(
+        `Request to ${path} timed out after ${REQUEST_TIMEOUT_MS / 1000}s. ` +
+          `Check that the backend is running and reachable at ${API_BASE_URL}, ` +
+          "and that its CORS settings allow this origin.",
+      );
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 async function uploadCsv<T>(path: string, file: File): Promise<T> {
   const formData = new FormData();
   formData.append("file", file);
 
-  const response = await fetch(`${API_BASE_URL}${path}`, {
+  const response = await apiFetch(path, {
     method: "POST",
     body: formData,
   });
@@ -190,9 +224,7 @@ async function fetchPage<T>(
   limit: number,
   offset: number,
 ): Promise<Page<T>> {
-  const response = await fetch(
-    `${API_BASE_URL}${path}?limit=${limit}&offset=${offset}`,
-  );
+  const response = await apiFetch(`${path}?limit=${limit}&offset=${offset}`);
   if (!response.ok) {
     throw new Error(await readErrorDetail(response));
   }
@@ -230,7 +262,7 @@ export function fetchExams(limit = 50, offset = 0): Promise<Page<ExamOut>> {
 }
 
 export async function fetchExam(examId: number): Promise<ExamDetailOut> {
-  const response = await fetch(`${API_BASE_URL}/exams/${examId}`);
+  const response = await apiFetch(`/exams/${examId}`);
   if (!response.ok) {
     throw new Error(await readErrorDetail(response));
   }
@@ -241,14 +273,11 @@ export async function generateSeating(
   examId: number,
   strategy = "sequential",
 ): Promise<SeatingGenerationResult> {
-  const response = await fetch(
-    `${API_BASE_URL}/exams/${examId}/seating/generate`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ strategy }),
-    },
-  );
+  const response = await apiFetch(`/exams/${examId}/seating/generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ strategy }),
+  });
   if (!response.ok) {
     throw new Error(await readErrorDetail(response));
   }
@@ -268,8 +297,8 @@ export async function fetchGenerations(
 export async function fetchAssignments(
   generationId: number,
 ): Promise<SeatAssignmentListResult> {
-  const response = await fetch(
-    `${API_BASE_URL}/seating/generations/${generationId}/assignments`,
+  const response = await apiFetch(
+    `/seating/generations/${generationId}/assignments`,
   );
   if (!response.ok) {
     throw new Error(await readErrorDetail(response));

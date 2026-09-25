@@ -1,11 +1,19 @@
 "use client";
 
+import { usePathname } from "next/navigation";
 import { ReactNode, useState } from "react";
 import { Sidebar } from "./Sidebar";
 import { Topbar } from "./Topbar";
 
+const CHROME_LESS_ROUTES = ["/login"];
+
 export function AppShell({ children }: { children: ReactNode }) {
+  const pathname = usePathname();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+
+  if (CHROME_LESS_ROUTES.includes(pathname)) {
+    return <>{children}</>;
+  }
 
   return (
     <div className="min-h-screen bg-surface">

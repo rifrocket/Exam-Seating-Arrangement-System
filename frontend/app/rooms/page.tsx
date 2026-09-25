@@ -3,12 +3,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { Card } from "@/components/ui/Card";
 import { CsvImportButton } from "@/components/ui/CsvImportButton";
+import { DownloadSampleButton } from "@/components/ui/DownloadSampleButton";
 import { ImportSummary } from "@/components/ui/ImportSummary";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { SearchInput } from "@/components/ui/SearchInput";
 import { EmptyState, ErrorState, TableSkeleton } from "@/components/ui/States";
 import { Table, Tbody, Td, Th, Thead, Tr } from "@/components/ui/Table";
 import { RoomImportResult, RoomOut, fetchRooms, importRoomsCsv } from "@/lib/api";
+import { buildSampleRoomsCsv } from "@/lib/sampleData";
 
 export default function RoomsPage() {
   const [result, setResult] = useState<RoomImportResult | null>(null);
@@ -51,16 +53,22 @@ export default function RoomsPage() {
         title="Rooms"
         description="Manage exam rooms and their capacities"
         action={
-          <CsvImportButton
-            label="Import CSV"
-            onImport={importRoomsCsv}
-            onResult={(res) => {
-              setResult(res);
-              setImportError(null);
-              load();
-            }}
-            onError={setImportError}
-          />
+          <>
+            <DownloadSampleButton
+              filename="sample-rooms.csv"
+              buildContent={buildSampleRoomsCsv}
+            />
+            <CsvImportButton
+              label="Import CSV"
+              onImport={importRoomsCsv}
+              onResult={(res) => {
+                setResult(res);
+                setImportError(null);
+                load();
+              }}
+              onError={setImportError}
+            />
+          </>
         }
       />
 

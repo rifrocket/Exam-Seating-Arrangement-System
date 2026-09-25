@@ -6,11 +6,13 @@ import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { Card, CardHeader } from "@/components/ui/Card";
 import { CsvImportButton } from "@/components/ui/CsvImportButton";
+import { DownloadSampleButton } from "@/components/ui/DownloadSampleButton";
 import { ImportSummary } from "@/components/ui/ImportSummary";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { EmptyState, ErrorState, TableSkeleton } from "@/components/ui/States";
 import { Table, Tbody, Td, Th, Thead, Tr } from "@/components/ui/Table";
 import { ExamOut, ScheduleImportResult, fetchExams, importScheduleCsv } from "@/lib/api";
+import { buildSampleScheduleCsv } from "@/lib/sampleData";
 
 export default function SchedulePage() {
   const [result, setResult] = useState<ScheduleImportResult | null>(null);
@@ -46,16 +48,22 @@ export default function SchedulePage() {
         title="Schedule Import"
         description="Import a schedule CSV against already-imported courses and rooms"
         action={
-          <CsvImportButton
-            label="Import Schedule CSV"
-            onImport={importScheduleCsv}
-            onResult={(res) => {
-              setResult(res);
-              setImportError(null);
-              load();
-            }}
-            onError={setImportError}
-          />
+          <>
+            <DownloadSampleButton
+              filename="sample-schedule.csv"
+              buildContent={buildSampleScheduleCsv}
+            />
+            <CsvImportButton
+              label="Import Schedule CSV"
+              onImport={importScheduleCsv}
+              onResult={(res) => {
+                setResult(res);
+                setImportError(null);
+                load();
+              }}
+              onError={setImportError}
+            />
+          </>
         }
       />
 
