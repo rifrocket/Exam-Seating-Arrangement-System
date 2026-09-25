@@ -9,10 +9,15 @@ from app.db.repositories import (
     SqlAlchemyCourseRepository,
     SqlAlchemyExamRepository,
     SqlAlchemyExamRoomRepository,
+    SqlAlchemyRegistrationRepository,
     SqlAlchemyRoomRepository,
+    SqlAlchemySeatAssignmentRepository,
+    SqlAlchemySeatingGenerationRepository,
+    SqlAlchemyStudentRepository,
 )
-from app.domain import Course, Room
+from app.domain import Course, Registration, Room, Student
 from app.services.schedule_import import ImportStatus, ScheduleImportService
+from app.services.seating_generation import SeatingService
 
 HEADER = "Day,Date,Time,Course Code,Course Name,No. of Students,Room(s),No. of Students/ Room\n"
 
@@ -174,3 +179,57 @@ def test_failed_import_never_touches_the_database(db_session: Session) -> None:
 
     assert result.status == ImportStatus.FAILED
     assert SqlAlchemyExamRepository(db_session).count() == 0
+
+
+def test_imported_exam_rooms_feed_a_successful_seating_generation(db_session: Session) -> None:
+    """End-to-end: rooms + a registered student body exist, a schedule CSV
+    is imported through ScheduleImportService (never seeded directly via
+    repositories), and the resulting Exam/ExamRoom rows must be enough for
+    SeatingService to actually seat students — i.e. scheduled/physical
+    capacity must not silently come out as zero."""
+    _seed_course(db_session, "CS101", "Intro to Computer Science")
+    _seed_room(db_session, "401", 10)
+    _seed_room(db_session, "402", 10)
+
+    course = SqlAlchemyCourseRepository(db_session).get_by_code("CS101")
+    assert course is not None
+    student_repo = SqlAlchemyStudentRepository(db_session)
+    registration_repo = SqlAlchemyRegistrationRepository(db_session)
+    for i in range(1, 16):
+        student = student_repo.add(Student(id=None, student_number=f"{1000 + i}", full_name=f"Student {i}"))
+        registration_repo.add(Registration(id=None, student_id=student.id, course_id=course.id))
+    db_session.commit()
+
+    service = _make_service(db_session)
+    result = service.import_csv(
+        HEADER
+        + "Friday,2-Oct-26,09:00-11:00,CS101,Intro to Computer Science,15,401,10\n"
+        + "Friday,2-Oct-26,09:00-11:00,CS101,Intro to Computer Science,15,402,5\n"
+    )
+    assert result.status == ImportStatus.SUCCESS
+    assert result.exam_rooms_created == 2
+
+    exam = SqlAlchemyExamRepository(db_session).list()[0]
+    assert exam.id is not None
+
+    seating_service = SeatingService(
+        exam_repository=SqlAlchemyExamRepository(db_session),
+        exam_room_repository=SqlAlchemyExamRoomRepository(db_session),
+        room_repository=SqlAlchemyRoomRepository(db_session),
+        course_repository=SqlAlchemyCourseRepository(db_session),
+        registration_repository=registration_repo,
+        student_repository=student_repo,
+        seating_generation_repository=SqlAlchemySeatingGenerationRepository(db_session),
+        seat_assignment_repository=SqlAlchemySeatAssignmentRepository(db_session),
+    )
+    outcome = seating_service.generate(exam.id, strategy_name="sequential")
+    db_session.commit()
+
+    assert outcome.scheduled_student_count == 15
+    assert outcome.total_physical_capacity == 20
+    assert outcome.generation.total_assigned == 15
+    assert outcome.generation.total_unassigned == 0
+
+    assignments = SqlAlchemySeatAssignmentRepository(db_session).list_by_generation(outcome.generation.id)
+    room_ids = {a.room_id for a in assignments}
+    assert len(room_ids) == 2
