@@ -158,18 +158,27 @@ Nine entities exist as of Milestone 3:
 **Deliberately still not modeled (unchanged since the foundation
 milestone):**
 
-- **Seat** (a physical, addressable seat within a room) — nothing today
-  needs seat-level identity; `SeatAssignment.seat_number` is a running
-  integer, not a foreign key. Introduce a real `Seat` entity when a
-  strategy actually needs seat adjacency (anti-cheating, layout-aware
-  constraints). Milestone 3 did not add this even though it introduced
-  `ExamRoom` — room-level allocation and seat-level layout are different
-  concerns, and nothing yet needs the latter.
-- **Constraint** (a generic configurable rule) — no strategy exists yet
-  that reads constraints. Designing a generic constraint schema now, with
-  nothing to validate it against, would be speculative. `SeatingGeneration`
-  is the extension point: it can carry a `config` payload once
-  `ConstraintSeatingStrategy` defines what that payload needs to look like.
+- **Seat** as a *persisted* entity (a physical, addressable seat within a
+  room, backed by a database table) — `SeatAssignment.seat_number` is
+  still a running integer, not a foreign key, and there is no seat
+  database table, layout editor, or frontend seat map. Milestone 6 did
+  introduce a pure, in-memory seat topology (`SeatPosition`,
+  `SeatTopology`/`RectangularRoomTopology` in `app/seating/topology.py`)
+  because a constraint like "not adjacent" needs *some* spatial
+  representation to be testable at all — but that representation is
+  derived on the fly from a room's (rows, columns), never persisted.
+  Introduce a real, persisted `Seat` entity only when a non-rectangular or
+  admin-editable layout is actually needed.
+- **Constraint** as a *generic, database-configurable* rule (e.g. a JSON
+  schema an admin edits through the UI) — no strategy reads constraints
+  yet, and designing a database-backed generic rule schema now, with
+  nothing to validate it against, would be speculative. Milestone 6 added
+  typed Python `Constraint`/`HardConstraint`/`SoftConstraint` classes (see
+  **Constraint seating foundation** above) — that is not the same thing:
+  it's a fixed set of small classes in code, not a schema anyone
+  configures at runtime. `SeatingGeneration` remains the extension point
+  for a persisted `config` payload once `ConstraintSeatingStrategy` itself
+  defines what that payload needs to look like.
 
 ### Three numbers that must never collapse into one
 
@@ -392,6 +401,102 @@ regenerate-twice HTTP smoke test both hold: identical input always
 produces identical `SeatAssignmentRecord`s, in both content and per-room
 seat numbering.
 
+## Constraint seating foundation (Milestone 6: foundation only, no strategy yet)
+
+Milestone 6 adds the domain layer a future `ConstraintSeatingStrategy` will
+need. **Nothing described in this section is wired into `SeatingEngine`,
+any registered strategy, or the API yet** — `get_strategy("constraint")`
+still raises `UnknownStrategyError` exactly as before; the registry in
+`app/seating/engine.py` is unchanged. This section documents foundation,
+not a shipped feature:
+
+```
+Current (implemented, unchanged):
+SeatingStrategy
+  └── SequentialSeatingStrategy
+
+Foundation (implemented this milestone, not yet used by any strategy):
+SeatTopology / RectangularRoomTopology   (app/seating/topology.py)
+Constraint / HardConstraint / SoftConstraint,
+ConstraintSet, ConstraintEvaluation,
+evaluate_constraints()                   (app/seating/constraints.py)
+
+Future (not implemented):
+ConstraintSeatingStrategy
+OptimizationSeatingStrategy
+```
+
+### Seat topology (`app/seating/topology.py`)
+
+`SequentialSeatingStrategy` only needs a per-room ordinal (`seat_number`);
+a constraint like "these two students must not sit next to each other"
+needs actual spatial structure. `SeatPosition` (room_id, seat_number, row,
+column) is that structure, and `SeatTopology` is the abstract interface
+for answering spatial questions about it: `same_row`, `same_column`,
+`is_adjacent`, `distance`. `RectangularRoomTopology` is the one concrete
+implementation so far — a plain `rows x columns` grid, numbered row-major
+from 1, with no persistence at all: positions are derived from
+`seat_number` on demand, the same way a test fixture would. `is_adjacent`
+counts diagonal neighbors as adjacent (Chebyshev distance 1), matching
+what an anti-cheating "don't sit next to" rule actually needs.
+
+This is deliberately not a full room-layout feature: no seat database
+table, no graphical layout editor, no frontend seat map. The `SeatTopology`
+interface is what leaves room for a later, persisted, non-rectangular
+layout — a future implementation of the same interface — without any
+constraint or strategy code changing.
+
+`SeatAssignmentCandidate` (student_id + `SeatPosition`) is the constraint
+layer's own input shape, distinct from `SeatAssignmentRecord` (the
+engine's persistence-facing room_id + seat_number output) the same way
+`RoomAllocation` is already a boundary-specific shape distinct from the
+persisted `ExamRoom`.
+
+### Constraint model (`app/seating/constraints.py`)
+
+Two constraint severities, as two distinct ABCs rather than one type with
+a severity flag:
+
+- **`HardConstraint`** — must never be violated. Example implemented here:
+  `StudentsNotAdjacentConstraint` (two specific students must not end up
+  in adjacent seats).
+- **`SoftConstraint`** — should be satisfied when possible, but violating
+  one still leaves the seating acceptable. Example implemented here:
+  `SeparateCoursesConstraint` (prefer that adjacent seats hold
+  same-course students, i.e. each course seats as a contiguous block).
+  It takes a plain `Mapping[int, int]` of student_id -> course_id supplied
+  by its caller — it does not look courses up itself, and its existence
+  here is not mixed-course seating support: nothing about how
+  `Exam`/`ExamRoom`/`SeatingService` allocate a single course's students
+  has changed.
+
+`ConstraintSet` groups a run's hard and soft constraints. This is
+deliberately not a generic rule language or DSL — adding a new constraint
+means writing one small class implementing `HardConstraint` or
+`SoftConstraint`, the same way adding a new `SeatingStrategy` means
+writing one small class.
+
+### Constraint evaluation
+
+`evaluate_constraints(constraint_set, assignments) -> ConstraintEvaluation`
+is a pure function checking one proposed (student_id -> position) seating
+against a `ConstraintSet`. `ConstraintEvaluation.satisfied` answers only
+"is this seating acceptable at all" — true iff there are no hard-constraint
+violations; a soft-constraint violation is recorded in `violations` (via
+`soft_violations`) but never flips `satisfied` to False. This is the
+building block a future `ConstraintSeatingStrategy` calls once per
+candidate seating it considers — it does not yet exist, and section 7 of
+the Milestone 6 spec is explicit that it should not be built prematurely:
+a placeholder that silently behaved like sequential seating would be worse
+than no strategy at all.
+
+Like the rest of `app/seating/`, `topology.py` and `constraints.py` import
+nothing from FastAPI, SQLAlchemy, ReportLab, a repository, or `app.api`/
+`app.db` (enforced by
+`backend/tests/seating/test_constraint_foundation_boundaries.py`, which
+parses each module's imports directly rather than relying on whatever
+happens to already be loaded in `sys.modules`).
+
 ## Persistence boundary
 
 - SQLite via SQLAlchemy 2.0 declarative models (`app/db/models.py`).
@@ -564,13 +669,19 @@ The following are **not** implemented yet, anywhere in the codebase:
 
 - **Constraint- and optimization-based seating** — `SeatingEngine` and
   `SeatingStrategy` exist, and `SequentialSeatingStrategy` is implemented
-  (Milestone 4). `ConstraintSeatingStrategy` and
-  `OptimizationSeatingStrategy` do not exist yet.
-- A **physical Seat model** (seat-level identity/layout).
+  (Milestone 4). Milestone 6 added the constraint/topology *foundation*
+  (see **Constraint seating foundation** above), but `ConstraintSeatingStrategy`
+  and `OptimizationSeatingStrategy` themselves — the strategies that would
+  actually use that foundation to solve a seating — do not exist yet, and
+  no solver (OR-Tools, CP-SAT, ILP, or otherwise) has been chosen.
+- A **persisted physical Seat model** (a database-backed seat-level
+  layout/editor). A pure, in-memory seat topology exists as of Milestone 6
+  (`SeatPosition` / `RectangularRoomTopology`), but there is no seat
+  database table, layout editor, or frontend seat map.
 - **Mixed-course seating.**
-- **Anti-cheating rules.**
-- A **constraint engine** (`ConstraintSeatingStrategy` and any generic
-  `Constraint` entity/schema).
+- **Anti-cheating rules** as an actual seating behavior — `SoftConstraint`/
+  `HardConstraint` types exist (Milestone 6) with one example of each, but
+  nothing evaluates them against a real generation yet.
 - An **optimization engine** (`OptimizationSeatingStrategy`).
 - **Advanced seating UI** (seat-map visualization, drag-and-drop).
 - **Generation comparison UI** (diffing/comparing `SeatingGeneration` runs
