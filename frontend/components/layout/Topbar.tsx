@@ -1,7 +1,7 @@
 "use client";
 
 import { LogOut, Menu, UserCircle } from "lucide-react";
-import { useRouter, usePathname } from "next/navigation";
+import { usePathname } from "next/navigation";
 import { useState } from "react";
 import { NAV_ITEMS } from "./Sidebar";
 
@@ -14,7 +14,6 @@ function currentSectionLabel(pathname: string): string {
 
 export function Topbar({ onMenuClick }: { onMenuClick: () => void }) {
   const pathname = usePathname();
-  const router = useRouter();
   const label = currentSectionLabel(pathname);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
 
@@ -23,8 +22,14 @@ export function Topbar({ onMenuClick }: { onMenuClick: () => void }) {
     try {
       await fetch("/api/auth/logout", { method: "POST" });
     } finally {
-      router.replace("/login");
-      router.refresh();
+      // Hard navigation, not the client router — see the same rationale
+      // in app/login/page.tsx: the next request must be a fresh top-level
+      // request so the proxy re-evaluates auth from scratch (a client-side
+      // push/replace can be served from the router's client cache instead
+      // of re-running the proxy). Deliberate exception to the usual
+      // "use the client router" guidance, specifically for auth transitions.
+      // eslint-disable-next-line @next/next/no-location-assign-relative-destination
+      window.location.href = "/login";
     }
   }
 

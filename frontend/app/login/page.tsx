@@ -1,12 +1,11 @@
 "use client";
 
 import { GraduationCap } from "lucide-react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { FormEvent, Suspense, useState } from "react";
 import { Button } from "@/components/ui/Button";
 
 function LoginForm() {
-  const router = useRouter();
   const searchParams = useSearchParams();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -28,9 +27,19 @@ function LoginForm() {
         setError(body?.detail ?? "Login failed.");
         return;
       }
-      const redirectTo = searchParams.get("from") || "/";
-      router.replace(redirectTo);
-      router.refresh();
+      // A hard, full-page navigation (not the client router) is
+      // deliberate here: the very next request must be a fresh top-level
+      // browser request so the proxy re-evaluates auth against the
+      // just-set cookie from scratch. A client-side router.replace/refresh
+      // can race with — or simply not be the request the proxy sees —
+      // which was exactly the "successful login bounces back to /login"
+      // bug this fixes.
+      const rawRedirect = searchParams.get("from");
+      const redirectTo =
+        rawRedirect && rawRedirect.startsWith("/") && !rawRedirect.startsWith("//")
+          ? rawRedirect
+          : "/";
+      window.location.href = redirectTo;
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {

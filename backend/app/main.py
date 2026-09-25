@@ -32,6 +32,15 @@ def create_app() -> FastAPI:
         allow_origins=settings.cors_origins,
         allow_methods=["*"],
         allow_headers=["*"],
+        # Chromium sends an extra Private Network Access preflight check
+        # (Access-Control-Request-Private-Network) for any cross-origin
+        # request targeting a loopback/private address — which every local
+        # dev setup here is. Without this, Starlette's CORS middleware
+        # replies 400 to that preflight and the browser silently blocks
+        # every request, even though a plain curl call (which never sends
+        # that header) looks completely fine. This is exactly what was
+        # breaking every page load and CSV import in a real browser.
+        allow_private_network=True,
     )
     app.include_router(health_router)
     app.include_router(registrations_router)
