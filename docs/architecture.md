@@ -1236,6 +1236,50 @@ types, not once. It now dedupes by room_id, first-appearance order,
 matching the same idiom `_merge_shared_room_allocations` already uses
 for the seating algorithm itself.
 
+## Database reset (Milestone 15)
+
+`POST /admin/database/reset` (`app/api/admin.py`) is a destructive
+administrative operation: it deletes every row from every application
+table — students, courses, registrations, exams, rooms, exam_rooms,
+examination_sessions, session_exams, seating_generations,
+seat_assignments — via `app.db.reset.reset_database()`, which deletes
+tables in `Base.metadata.sorted_tables`'s reverse (child-before-parent)
+order so it never violates a foreign key, and works for a table added
+in the future with no change to this file. The **schema itself is never
+touched** (no `drop_all()`/`create_all()`) — this app has no
+immutable/reference-data table to protect; every row in every table is
+data the application itself created via CSV import or seating
+generation. The whole operation runs as one transaction (one
+`session.commit()` on success; `session.rollback()` and a clean 500 on
+any failure) — a partially reset database is never left behind.
+
+**Authorization is enforced entirely server-side.** The endpoint
+requires a `password` in its JSON body, compared (via
+`secrets.compare_digest`) against `Settings.admin_password`
+(`APP_ADMIN_PASSWORD`, backend `.env`) — not merely gated by the
+frontend UI. This is deliberately the **same** administrator password
+the frontend's login page already uses (`ADMIN_PASSWORD`,
+`frontend/.env.local`), not a second, independently-managed secret — an
+operator sets both env vars to the same value. A separate backend-side
+setting exists only because the FastAPI backend and the Next.js
+frontend are two independent OS processes with their own environment;
+there is no way for one process to read the other's `process.env`
+directly. If `APP_ADMIN_PASSWORD` is unset, the endpoint refuses every
+request (500), rather than treating "nothing configured" as "anything
+is accepted." The password is never present in any response body, log
+line, or exception message — only a static `{"status": "ok", ...}` (or a
+static failure message) is ever returned.
+
+The frontend's `/settings` page (`app/settings/page.tsx`, linked from a
+new "Settings" sidebar entry) is the only place this is exposed: a
+"Reset Database" button opens a confirmation dialog (destructive
+explanation, no password yet), which on confirmation advances to a
+password prompt. The password is sent once, directly to the backend,
+and cleared from React state immediately after the request settles
+(success or failure) — never written to `localStorage`/`sessionStorage`.
+On success, the app redirects to the dashboard so no page is left
+showing now-nonexistent data.
+
 ## Persistence boundary
 
 - SQLite via SQLAlchemy 2.0 declarative models (`app/db/models.py`).

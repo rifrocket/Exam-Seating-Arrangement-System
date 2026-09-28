@@ -9,6 +9,7 @@ import {
   GraduationCap,
   LayoutDashboard,
   ListChecks,
+  Settings,
   Users2,
   Users,
   X,
@@ -27,6 +28,7 @@ const NAV_ITEMS = [
   { href: "/examination-sessions", label: "Examination Sessions", icon: Users2 },
   { href: "/seating-generations", label: "Seating Generations", icon: GraduationCap },
   { href: "/reports", label: "Reports", icon: FileBarChart },
+  { href: "/settings", label: "Settings", icon: Settings },
 ];
 
 function isActive(pathname: string, href: string): boolean {

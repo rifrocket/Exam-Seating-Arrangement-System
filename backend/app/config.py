@@ -36,6 +36,19 @@ class Settings(BaseSettings):
         "http://127.0.0.1:3000",
     ]
 
+    # The shared secret protecting POST /admin/database/reset. Set this to
+    # the *same* value as the frontend's ADMIN_PASSWORD (frontend/.env.local)
+    # — one administrator password protects both the login page and this
+    # destructive backend operation. A separate backend-side setting exists
+    # (rather than the backend somehow reading the frontend's Next.js
+    # process environment, which isn't possible — they're two independent
+    # processes) purely because the two runtimes can't share memory; this
+    # is not a second, independently-managed password. `None` (the
+    # default) means the endpoint is unreachable: with nothing configured
+    # to compare against, every request is rejected rather than silently
+    # allowed. See docs/architecture.md's "Database reset" section.
+    admin_password: str | None = None
+
 
 @lru_cache
 def get_settings() -> Settings:

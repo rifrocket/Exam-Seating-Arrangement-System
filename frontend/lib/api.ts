@@ -436,3 +436,28 @@ export function rangesReportUrl(generationId: number): string {
 export function seatMapReportUrl(generationId: number): string {
   return `${API_BASE_URL}/seating/generations/${generationId}/reports/seat-map`;
 }
+
+export interface DatabaseResetResult {
+  status: string;
+  detail: string;
+}
+
+/**
+ * Sends the administrator password directly to the backend, which is
+ * the only place it's actually verified (against APP_ADMIN_PASSWORD) —
+ * this call is not itself an authorization check, just a network
+ * request. The password is never persisted anywhere on this side; the
+ * caller (SettingsPage) clears its own state immediately after this
+ * resolves or rejects.
+ */
+export async function resetDatabase(password: string): Promise<DatabaseResetResult> {
+  const response = await apiFetch("/admin/database/reset", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password }),
+  });
+  if (!response.ok) {
+    throw new Error(await readErrorDetail(response));
+  }
+  return response.json();
+}
