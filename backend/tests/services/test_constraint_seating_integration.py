@@ -1,7 +1,8 @@
-"""Integration test (Phase 7, section 12): exercises the complete path
+"""Integration test (Phase 7 section 12, updated for Phase 8's
+RepositoryRoomTopologyProvider): exercises the complete path
 
-    students, rooms, exam allocations
-        -> RoomTopologyProvider (the default static demo provider)
+    students, rooms (with configured topology), exam allocations
+        -> RepositoryRoomTopologyProvider (reads Room.rows/Room.columns)
         -> ConstraintSeatingStrategy
         -> SeatingEngine
         -> SeatingService (real repositories, real in-memory DB)
@@ -11,15 +12,14 @@ through `SeatingService.generate(exam_id, strategy_name="constraint")` —
 the exact same entry point the API uses — with no FastAPI and no mocking
 of the strategy or engine. All data synthetic.
 
-Room codes here are deliberately "401" and "402" with capacity 10 each,
-matching `ConstraintSeatingStrategy`'s built-in `DEFAULT_DEMO_ROOM_LAYOUTS`
-(this milestone's explicit in-memory demo configuration) — an arbitrary
-room code would raise `UnknownRoomTopologyError`, which is expected and
-correct, not a bug to work around here.
+Room codes here are deliberately *not* "401"/"402" (arbitrary codes like
+"A101"/"B-204" instead) — proving the production path now depends on each
+room's own configured `rows`/`columns`, never on a specific room code.
 """
 
 from datetime import date
 
+import pytest
 from sqlalchemy.orm import Session
 
 from app.db.repositories import (
@@ -33,6 +33,7 @@ from app.db.repositories import (
     SqlAlchemyStudentRepository,
 )
 from app.domain import Course, Exam, ExamRoom, GenerationStatus, Registration, Room, Student
+from app.seating.topology_provider import RoomTopologyMissingError
 from app.services.seating_generation import SeatingService
 
 
@@ -63,8 +64,8 @@ def _seed_exam(db_session: Session, student_count: int) -> Exam:
     )
     room_repo = SqlAlchemyRoomRepository(db_session)
     exam_room_repo = SqlAlchemyExamRoomRepository(db_session)
-    for code in ("401", "402"):
-        room = room_repo.add(Room(id=None, code=code, capacity=10))
+    for code in ("A101", "B-204"):  # deliberately not 401/402
+        room = room_repo.add(Room(id=None, code=code, capacity=10, rows=2, columns=5))
         exam_room_repo.add(ExamRoom(id=None, exam_id=exam.id, room_id=room.id, allocated_students=10))
 
     student_repo = SqlAlchemyStudentRepository(db_session)
@@ -123,3 +124,43 @@ def test_constraint_and_sequential_strategies_agree_when_unconstrained(db_sessio
     sequential_keys = sorted((a.student_id, a.room_id, a.seat_number) for a in sequential_assignments)
     constraint_keys = sorted((a.student_id, a.room_id, a.seat_number) for a in constraint_assignments)
     assert sequential_keys == constraint_keys
+
+
+def test_sequential_works_without_topology_but_constraint_reports_it_missing(db_session: Session) -> None:
+    """A room with only a capacity (no rows/columns) is completely normal,
+    valid state — sequential seating never needs a topology and must not
+    be affected by its absence. Constraint seating does need one, and must
+    fail with a clear, specific error rather than guessing a layout or
+    crashing with something opaque."""
+    course = SqlAlchemyCourseRepository(db_session).add(Course(id=None, code="CS101", name="Intro to CS"))
+    exam = SqlAlchemyExamRepository(db_session).add(
+        Exam(
+            id=None,
+            course_id=course.id,
+            exam_date=date(2026, 10, 2),
+            time_slot="09:00-11:00",
+            expected_student_count=5,
+            day_label="Friday",
+        )
+    )
+    room_repo = SqlAlchemyRoomRepository(db_session)
+    room = room_repo.add(Room(id=None, code="101", capacity=10))  # no topology configured
+    SqlAlchemyExamRoomRepository(db_session).add(
+        ExamRoom(id=None, exam_id=exam.id, room_id=room.id, allocated_students=10)
+    )
+    student_repo = SqlAlchemyStudentRepository(db_session)
+    registration_repo = SqlAlchemyRegistrationRepository(db_session)
+    for i in range(1, 6):
+        student = student_repo.add(Student(id=None, student_number=f"{1000 + i}", full_name=f"Student {i}"))
+        registration_repo.add(Registration(id=None, student_id=student.id, course_id=course.id))
+    db_session.commit()
+
+    service = _make_service(db_session)
+
+    sequential_outcome = service.generate(exam.id, strategy_name="sequential")
+    db_session.commit()
+    assert sequential_outcome.generation.status == GenerationStatus.SUCCESS
+    assert sequential_outcome.generation.total_assigned == 5
+
+    with pytest.raises(RoomTopologyMissingError):
+        service.generate(exam.id, strategy_name="constraint")

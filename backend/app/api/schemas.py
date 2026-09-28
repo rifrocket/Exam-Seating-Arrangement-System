@@ -87,6 +87,8 @@ class RoomOut(BaseModel):
     id: int
     code: str
     capacity: int
+    rows: int | None
+    columns: int | None
 
 
 class RoomListResponse(BaseModel):

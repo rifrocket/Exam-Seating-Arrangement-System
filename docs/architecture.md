@@ -117,7 +117,10 @@ Concretely, as enforced today:
 
 ## Domain boundaries
 
-Nine entities exist as of Milestone 3:
+Nine *persisted* entities exist as of Milestone 3 (see below for `Room`'s
+Milestone 8 topology fields). `ExaminationSession` (Milestone 8) is a
+tenth domain concept but is deliberately **not** persisted — see
+**Examination session foundation**.
 
 - **Student** `(id, student_number, full_name)` — full name stored
   complete; any truncation (e.g. the legacy 3-token name) is a
@@ -140,10 +143,12 @@ Nine entities exist as of Milestone 3:
   **One Exam can have multiple ExamRoom records** — this is how a single
   real-world exam that spans several rooms is represented; it was never
   forced into a many-to-one Exam→Room relationship.
-- **Room** `(id, code, capacity)` — first-class; seeded from a CSV
-  matching the legacy `input/locations.csv` shape (`room, capacity`,
-  with an optional ignored `index` column), which the legacy code never
-  actually read.
+- **Room** `(id, code, capacity, rows, columns)` — first-class; seeded
+  from a CSV matching the legacy `input/locations.csv` shape (`room,
+  capacity`, with an optional ignored `index` column), which the legacy
+  code never actually read. `rows`/`columns` (Milestone 8) are optional
+  and always both-or-neither — a room without them isn't an error, it
+  just has no configured seat topology yet (see **Room topology**).
 - **SeatingGeneration** `(id, exam_id, strategy_name, status,
   total_registered, total_assigned, total_unassigned, capacity_shortage,
   warnings, created_at)` — one identifiable, versioned run of a seating
@@ -155,20 +160,18 @@ Nine entities exist as of Milestone 3:
   student_id, seat_number)` — one student's assigned room + running
   position for a generation.
 
-**Deliberately still not modeled (unchanged since the foundation
-milestone):**
+**Deliberately still not modeled:**
 
-- **Seat** as a *persisted* entity (a physical, addressable seat within a
-  room, backed by a database table) — `SeatAssignment.seat_number` is
-  still a running integer, not a foreign key, and there is no seat
-  database table, layout editor, or frontend seat map. Milestone 6 did
-  introduce a pure, in-memory seat topology (`SeatPosition`,
-  `SeatTopology`/`RectangularRoomTopology` in `app/seating/topology.py`)
-  because a constraint like "not adjacent" needs *some* spatial
-  representation to be testable at all — but that representation is
-  derived on the fly from a room's (rows, columns), never persisted.
-  Introduce a real, persisted `Seat` entity only when a non-rectangular or
-  admin-editable layout is actually needed.
+- **Seat** as a *persisted, individually-addressable* entity — there is
+  still no seat database table, no row per physical seat, and
+  `SeatAssignment.seat_number` is still a running integer, not a foreign
+  key. What *is* persisted, as of Milestone 8, is `Room.rows`/`Room.columns`
+  — a room's overall rectangular *shape*, not individual seat rows. A
+  `SeatPosition`/`SeatTopology` (Milestone 6, `app/seating/topology.py`)
+  is still derived on the fly from those two integers each time it's
+  needed, never itself stored. Introduce a real, persisted `Seat` entity
+  only when a non-rectangular or per-seat-editable layout is actually
+  needed — a rectangular room described by two integers doesn't need one.
 - **Constraint** as a *generic, database-configurable* rule (e.g. a JSON
   schema an admin edits through the UI) — `ConstraintSeatingStrategy`
   (Milestone 7) does now read and evaluate constraints during generation,
@@ -522,10 +525,6 @@ this milestone existed.
 
 ### RoomTopologyProvider (`app/seating/topology_provider.py`)
 
-`Room` only ever stores a `code` and a physical `capacity` — it has no
-rows/columns, and inferring geometry from capacity alone (e.g. "capacity
-10 implies 2x5") would fabricate a physical fact the data doesn't have;
-two 10-seat rooms can have completely different real layouts.
 `RoomTopologyProvider` is the abstract boundary between "a room" and "a
 `SeatTopology`":
 
@@ -534,24 +533,15 @@ class RoomTopologyProvider(ABC):
     def get_topology(self, room_id: int, room_code: str, capacity: int) -> SeatTopology: ...
 ```
 
-`StaticRoomTopologyProvider` is the only implementation so far: a plain,
-caller-supplied `room_code -> (rows, columns)` mapping, kept purely in
-memory — no database table, no admin UI. It **validates** that the
-configured layout's seat count exactly equals the room's actual
-`capacity`, raising `RoomTopologyMismatchError` if not (never silently
-truncating a layout or padding it with extra seats), and raises
-`UnknownRoomTopologyError` for any room code it wasn't given a layout
-for — there is no fallback guess.
-
-`ConstraintSeatingStrategy`'s own zero-argument constructor (needed
-because `get_strategy()` calls `strategy_cls()` with no arguments) uses
-`DEFAULT_DEMO_ROOM_LAYOUTS = {"401": (2, 5), "402": (2, 5)}` — an explicit,
-in-memory, demo-only configuration chosen to match this project's own
-sample rooms. **Any exam using a room code outside this mapping raises
-`UnknownRoomTopologyError` when generated with `strategy="constraint"`** —
-this is a real, current limitation of this milestone, not a bug: real,
-admin-configurable room layouts are future work (see **What is
-intentionally deferred**).
+As of Milestone 7 this had one implementation, `StaticRoomTopologyProvider`
+— a fixed, caller-supplied `room_code -> (rows, columns)` mapping, and
+`ConstraintSeatingStrategy`'s own zero-argument constructor defaulted to
+one hardcoded to this project's own two sample rooms
+(`{"401": (2, 5), "402": (2, 5)}`). **Milestone 8 replaces that default**:
+see **Room topology** below for `RepositoryRoomTopologyProvider`, the
+real production provider. `StaticRoomTopologyProvider` still exists (it's
+useful for tests and synthetic scenarios) but is no longer wired in by
+default anywhere.
 
 ### The constructive algorithm
 
@@ -615,6 +605,134 @@ The exam detail page (`frontend/app/exams/[examId]/page.tsx`) gained a
 minimal `Strategy: [Sequential ▼]` selector next to "Generate Seating",
 offering only `Sequential` and `Constraint` — `Optimization` is
 deliberately not listed, since it doesn't exist. No other UI changed.
+
+## Room topology (Milestone 8: `Room.rows`/`Room.columns`, `RepositoryRoomTopologyProvider`)
+
+Milestone 7's `ConstraintSeatingStrategy` could only seat exams whose
+rooms happened to be "401" or "402", from a hardcoded demo mapping.
+Milestone 8 replaces that with real, per-room configuration:
+
+```
+Room
+    code
+    capacity
+    rows        (optional)
+    columns     (optional)
+```
+
+**Topology is explicit, never inferred from capacity.** Two 10-seat rooms
+can have completely different real layouts, so `rows`/`columns` must be
+given directly — there is no "capacity 10 implies 2x5" rule anywhere in
+the codebase. `Room.__post_init__` enforces the invariant
+`rows * columns == capacity` exactly (and both-or-neither: a room can't
+have just `rows` without `columns`), raising `InvalidRoomTopologyError`
+immediately rather than letting a mismatched layout reach a strategy.
+
+**A room with no configured topology is normal, valid state** — it simply
+means "topology not configured yet":
+
+```
+Sequential strategy  -> only reads Room.capacity -> works regardless
+Constraint strategy  -> needs a SeatTopology      -> raises RoomTopologyMissingError
+```
+
+`RepositoryRoomTopologyProvider` (`app/services/seating_generation/room_topology_provider.py`)
+is the production `RoomTopologyProvider`: it reads a room's own
+`rows`/`columns` through a `RoomRepository` and returns a
+`RectangularRoomTopology`. It lives in `app.services`, not `app.seating`,
+for the same reason `SeatingService` itself does — it needs a repository,
+and `app.seating` never does. `SeatingService.generate()` builds one per
+call and passes it to `get_strategy()`, which forwards it to *every*
+strategy uniformly via `SeatingStrategy`'s own base `__init__`
+(`SequentialSeatingStrategy` inherits that constructor unchanged and never
+reads it). `POST /exams/{id}/seating/generate` maps
+`RoomTopologyMissingError`/`RoomTopologyMismatchError`/`UnknownRoomTopologyError`
+to a `400` with the error's own message, the same way it already did for
+`UnknownStrategyError`.
+
+### Database migration
+
+`rows`/`columns` are nullable, purely additive columns on the
+already-shipped `rooms` table. `app.db.init_db._ensure_room_topology_columns()`
+runs a plain `ALTER TABLE rooms ADD COLUMN ...` for either one that's
+missing from an existing database file, *unlike* `check_schema_compatibility`'s
+loud-failure approach for the `exams` table (Milestone 3) — see
+`init_db.py`'s own docstring for exactly why nullable-and-additive is safe
+to auto-migrate while that case wasn't. No existing room row's meaning
+changes; every pre-Milestone-8 room simply gets `rows=NULL, columns=NULL`
+("topology not configured"). Alembic remains deliberately unintroduced.
+
+### Room import
+
+The pre-Milestone-8 two-column format (`room,capacity`, with an optional
+legacy `index` column) still imports unchanged. Two new, **optional**
+columns are accepted together (`rows`, `columns`):
+
+```
+room,capacity,rows,columns
+401,10,2,5
+402,10,2,5
+```
+
+A row supplying only one of the two, or a combination that doesn't
+multiply out to that row's capacity, is a validation error for that row —
+its topology is rejected outright, never truncated or guessed at
+(matching how an invalid capacity value already rejects the whole row).
+An existing room with no topology gets one backfilled from a later import
+row (nothing is overwritten — there was nothing there before); an
+existing room that already has topology and the row disagrees is reported
+as a `room_topology` conflict, via the same never-overwrite policy
+already applied to capacity (`room_capacity` conflicts). `GET /rooms`
+exposes `rows`/`columns` (`null` when unconfigured), and the Rooms page
+shows them plus a `Configured`/`Not configured` badge.
+
+## Examination session foundation (Milestone 8: domain concept only, not persisted)
+
+```
+Exam
+    = one course's scheduled examination (course, date, time, rooms).
+ExaminationSession
+    = a shared seating session grouping one or more compatible Exams.
+```
+
+`Exam` is not overloaded to mean this — `ExaminationSession`
+(`app/domain/examination_session.py`) is a separate, pure domain concept:
+
+```python
+@dataclass(frozen=True)
+class ExaminationSession:
+    id: int | None
+    exam_ids: list[int]
+    exam_date: date
+    time_slot: str
+```
+
+`build_examination_session(exams) -> ExaminationSession` validates that
+every given exam shares the same `exam_date` and `time_slot`, raising
+`IncompatibleExamScheduleError` otherwise — a session represents one
+shared seating event, not an arbitrary bundle of exams. A session of
+exactly one exam is always valid, which is how the existing single-exam
+MVP conceptually fits this model without anything about today's behavior
+needing to change.
+
+`build_session_participants(session, students_by_exam_id, course_id_by_exam_id) ->
+list[StudentSeatingContext]` combines each exam's registered students into
+one participant list. A student registered in more than one of the
+session's exams raises `DuplicateStudentInSessionError` — never silently
+deduplicated or double-seated; this milestone does not define what "the
+same student in two exams at once" should mean. `StudentSeatingContext`
+(student_id + course_id) moved from `app.seating.constraints` to
+`app.domain` in this milestone specifically so both this function and
+`ConstraintSeatingStrategy`'s own single-exam path can produce it without
+either package depending on the other.
+
+**This is domain foundation only.** Nothing wires it into
+`POST /exams/{exam_id}/seating/generate`, which still generates seating
+for exactly one exam, exactly as before — no behavior changed. There is
+no session-generation API, no `ExaminationSession` persistence, and no
+frontend for it. See **What is intentionally deferred** for what building
+on this foundation would still require (room-sharing semantics across
+exams, a real generation endpoint, mixed-course seating itself).
 
 ## Persistence boundary
 
@@ -792,19 +910,27 @@ The following are **not** implemented yet, anywhere in the codebase:
   find a feasible seating even when one exists. `OptimizationSeatingStrategy`
   itself does not exist, and no solver has been chosen — the constraint
   model needs to prove itself first.
-- **Persisted, admin-configurable room layouts** — `RoomTopologyProvider`
-  (Milestone 7, `app/seating/topology_provider.py`) is a real, working
-  abstraction, but its only implementation (`StaticRoomTopologyProvider`)
-  is a fixed, in-memory `room_code -> (rows, columns)` mapping
-  (`DEFAULT_DEMO_ROOM_LAYOUTS`) covering exactly two demo room codes
-  ("401", "402"). There is no seat database table, no layout editor, and
-  no frontend seat map; generating with `strategy="constraint"` for any
-  other room code raises `UnknownRoomTopologyError` today.
-- **Mixed-course seating.** `StudentSeatingContext.course_id` (Milestone 7)
-  exists because `SeparateCoursesConstraint` needs a course id per
-  student, not because mixed-course exams are supported — every student
-  passed into a strategy today still comes from the same single-course
-  `Exam`.
+- **Graphical/admin room-layout configuration.** `Room.rows`/`Room.columns`
+  (Milestone 8) are real, persisted, per-room fields, configurable via the
+  room import CSV's optional `Rows`/`Columns` columns, and
+  `RepositoryRoomTopologyProvider` reads them for *any* room code — this
+  is no longer the Milestone 7 hardcoded two-room demo mapping. What's
+  still missing is only the *editing surface*: no drag-and-drop layout
+  designer, no graphical seat map, no way to set topology except by
+  (re-)importing a CSV row. A room with no topology configured is normal,
+  valid state (`RoomTopologyMissingError` only when constraint seating
+  actually needs one — see **Room topology** above).
+- **Mixed-course seating.** `ExaminationSession` and
+  `build_session_participants` (Milestone 8, `app/domain/examination_session.py`)
+  establish the domain concept and its validation (same date/time-slot,
+  no student in two of the session's exams), but nothing wires this into
+  generation: `POST /exams/{exam_id}/seating/generate` still seats exactly
+  one exam, there is no session-generation endpoint, `ExamRoom` allocation
+  is not shared or redistributed across exams, and `ExaminationSession`
+  itself is not persisted. `StudentSeatingContext.course_id` (Milestone 7,
+  moved to `app.domain` in Milestone 8) exists because
+  `SeparateCoursesConstraint` needs a course id per student, not because
+  mixed-course exams are actually seated together yet.
 - **Constraint management / admin-configurable constraints** —
   `HardConstraint`/`SoftConstraint` (Milestone 6) are real, working types,
   and `ConstraintSeatingStrategy` (Milestone 7) actually evaluates them

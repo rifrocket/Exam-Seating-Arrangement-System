@@ -43,8 +43,8 @@ const SAMPLE_STUDENTS: SampleStudent[] = [
 ];
 
 const SAMPLE_ROOMS = [
-  { code: "401", capacity: 10 },
-  { code: "402", capacity: 10 },
+  { code: "401", capacity: 10, rows: 2, columns: 5 },
+  { code: "402", capacity: 10, rows: 2, columns: 5 },
 ];
 
 const SAMPLE_EXAMS = [
@@ -61,8 +61,11 @@ export function buildSampleRegistrationsCsv(): string {
 }
 
 export function buildSampleRoomsCsv(): string {
-  const header = "index,room,capacity";
-  const rows = SAMPLE_ROOMS.map((r, i) => `${i + 1},${r.code},${r.capacity}`);
+  // Rows/columns are optional (the backend still accepts the plain
+  // room,capacity format) but included here so the sample data works
+  // end-to-end with both the Sequential and Constraint seating strategies.
+  const header = "index,room,capacity,rows,columns";
+  const rows = SAMPLE_ROOMS.map((r, i) => `${i + 1},${r.code},${r.capacity},${r.rows},${r.columns}`);
   return [header, ...rows].join("\n") + "\n";
 }
 

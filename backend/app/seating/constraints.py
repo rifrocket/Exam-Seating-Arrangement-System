@@ -29,7 +29,11 @@ allocate a single course's students into rooms.
 attribute set a constraint might need — never a generic metadata dict,
 never a SQLAlchemy model, and never fetched by the constraint itself.
 Only `course_id` exists today because only `SeparateCoursesConstraint`
-needs one; add a field only when a real constraint needs it.
+needs one; add a field only when a real constraint needs it. It lives in
+`app.domain` (Milestone 8), not here, so both a single-exam strategy and
+`app.domain.examination_session.build_session_participants` can produce
+it without either depending on the other — re-exported from here for
+existing callers.
 
 Constraints that compare two students' positions (`StudentsNotAdjacentConstraint`,
 `SeparateCoursesConstraint`) take a `Mapping[int, SeatTopology]` keyed by
@@ -42,13 +46,8 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
+from app.domain import StudentSeatingContext  # noqa: F401  (re-exported for existing callers)
 from app.seating.topology import SeatAssignmentCandidate, SeatTopology
-
-
-@dataclass(frozen=True)
-class StudentSeatingContext:
-    student_id: int
-    course_id: int
 
 
 class Constraint(ABC):

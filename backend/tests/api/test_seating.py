@@ -116,3 +116,33 @@ def test_capacity_shortage_surfaces_through_the_api(client: TestClient) -> None:
     assert body["total_assigned"] == 30
     assert body["total_unassigned"] == 50
     assert len(body["unassigned_student_ids"]) == 50
+
+
+def test_generate_constraint_seating_without_room_topology_returns_400(client: TestClient) -> None:
+    """ROOMS_CSV configures no topology — constraint seating must fail
+    clearly through the API (400, with a real message), not surface as an
+    unhandled 500."""
+    exam_id = _seed_full_exam(client)
+
+    response = client.post(f"/exams/{exam_id}/seating/generate", json={"strategy": "constraint"})
+
+    assert response.status_code == 400
+    assert "topology" in response.json()["detail"].lower()
+
+
+def test_generate_constraint_seating_succeeds_once_topology_is_configured(client: TestClient) -> None:
+    exam_id = _seed_full_exam(client)
+    reimport = _upload(
+        client,
+        "/rooms/import",
+        "room,capacity,rows,columns\n101,50,5,10\n102,50,5,10\n".encode("utf-8"),
+    )
+    assert reimport.status_code == 200
+
+    response = client.post(f"/exams/{exam_id}/seating/generate", json={"strategy": "constraint"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["strategy_name"] == "constraint"
+    assert body["status"] == "success"
+    assert body["total_assigned"] == 80

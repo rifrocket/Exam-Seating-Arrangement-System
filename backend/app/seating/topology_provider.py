@@ -13,11 +13,15 @@ room layout can be introduced later (see docs/architecture.md) without
 `ConstraintSeatingStrategy` changing at all — only a new provider
 implementation would be added.
 
-`StaticRoomTopologyProvider` is the only implementation for this
-milestone: a plain in-memory `room_code -> (rows, columns)` mapping,
-supplied at construction time. There is no database table, no admin UI,
-and no persistence here — "explicit in-memory configuration for
-testing/demo purposes" per this milestone's own scope.
+`StaticRoomTopologyProvider` is a fixed, in-memory `room_code -> (rows,
+columns)` mapping — useful for tests and synthetic scenarios, but no
+longer the production default as of Milestone 8: `Room` now has its own
+optional `rows`/`columns` (see `app.domain.room.Room`), and the actual
+production provider (`RepositoryRoomTopologyProvider`) reads *those*,
+rather than a hardcoded room-code table. It lives in
+`app.services.seating_generation`, not here, specifically because it
+needs a repository — the same reason `SeatingService` itself, not
+anything in `app.seating`, is the layer allowed to query one.
 
 Nothing in this module imports FastAPI, SQLAlchemy, HTTP, the filesystem,
 ReportLab, or a repository.
@@ -30,7 +34,13 @@ from app.seating.topology import RectangularRoomTopology, SeatTopology
 
 
 class UnknownRoomTopologyError(KeyError):
-    """No topology is configured for the given room code."""
+    """The room itself isn't recognized (no topology to even consider)."""
+
+
+class RoomTopologyMissingError(ValueError):
+    """The room is recognized but has no configured topology — this is
+    normal, valid state for a room used only with sequential seating; it
+    only becomes an error when constraint seating actually needs one."""
 
 
 class RoomTopologyMismatchError(ValueError):

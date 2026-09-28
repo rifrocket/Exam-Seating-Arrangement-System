@@ -34,29 +34,24 @@ unassigned because every remaining seat violated a hard constraint is a
 distinct fact — a *constraint* shortfall, not a *capacity* one — and is
 reported only as an additional entry in `warnings`, never by
 reinterpreting either shortage flag (see docs/architecture.md).
+
+Topology (Milestone 8): this strategy no longer carries a hardcoded
+room-code -> layout mapping. `get_strategy("constraint")` (called by
+`SeatingService`) always supplies a real `RoomTopologyProvider` — in
+production, `RepositoryRoomTopologyProvider`, which reads each room's own
+configured `rows`/`columns` (see `app.domain.room.Room`). A room with no
+configured topology causes `generate()` to raise `RoomTopologyMissingError`
+for that exam, rather than guessing a layout for it — arbitrary room
+codes are fully supported as long as their topology has actually been
+configured.
 """
 
-from app.domain import Exam, GenerationStatus, Student
-from app.seating.constraints import (
-    ConstraintSet,
-    SeparateCoursesConstraint,
-    StudentSeatingContext,
-    evaluate_constraints,
-)
+from app.domain import Exam, GenerationStatus, Student, StudentSeatingContext
+from app.seating.constraints import ConstraintSet, SeparateCoursesConstraint, evaluate_constraints
 from app.seating.models import RoomAllocation, SeatAssignmentRecord, SeatingResult
 from app.seating.strategy import SeatingStrategy
 from app.seating.topology import SeatAssignmentCandidate, SeatPosition, SeatTopology
-from app.seating.topology_provider import RoomTopologyProvider, StaticRoomTopologyProvider
-
-# Explicit, in-memory demo/test configuration only — see topology_provider.py
-# for why this can't be inferred from Room.capacity. Chosen to match this
-# project's own sample rooms (both capacity 10) purely for demo purposes;
-# any exam using a room code outside this mapping raises UnknownRoomTopologyError
-# rather than guessing a layout for it.
-DEFAULT_DEMO_ROOM_LAYOUTS: dict[str, tuple[int, int]] = {
-    "401": (2, 5),
-    "402": (2, 5),
-}
+from app.seating.topology_provider import RoomTopologyProvider
 
 
 def _build_student_seating_contexts(exam: Exam, students: list[Student]) -> list[StudentSeatingContext]:
@@ -81,16 +76,17 @@ class ConstraintSeatingStrategy(SeatingStrategy):
         topology_provider: RoomTopologyProvider | None = None,
         constraint_set: ConstraintSet | None = None,
     ) -> None:
-        """Both arguments are optional so `get_strategy("constraint")`
-        (which constructs this with zero arguments) still works end-to-end
-        against real data: `topology_provider` defaults to the static demo
-        provider above, and `constraint_set` defaults to `None`, which
-        signals `generate()` to build a default set itself (a single
-        `SeparateCoursesConstraint` derived from the exam being seated —
-        see `_build_student_seating_contexts`). Passing an explicit
-        `ConstraintSet()` (rather than leaving it `None`) opts out of that
-        default and runs with genuinely zero constraints instead."""
-        self._topology_provider = topology_provider or StaticRoomTopologyProvider(DEFAULT_DEMO_ROOM_LAYOUTS)
+        """`topology_provider` is threaded in uniformly by
+        `get_strategy()` via `SeatingStrategy`'s own base constructor (see
+        `app/seating/strategy.py`) — `SeatingService` supplies a real,
+        repository-backed one in production. `constraint_set` defaults to
+        `None`, which signals `generate()` to build a default set itself
+        (a single `SeparateCoursesConstraint` derived from the exam being
+        seated — see `_build_student_seating_contexts`). Passing an
+        explicit `ConstraintSet()` (rather than leaving it `None`) opts
+        out of that default and runs with genuinely zero constraints
+        instead."""
+        super().__init__(topology_provider=topology_provider)
         self._constraint_set = constraint_set
 
     def generate(
@@ -102,6 +98,11 @@ class ConstraintSeatingStrategy(SeatingStrategy):
         room_ids = [ra.room_id for ra in room_allocations]
         if len(room_ids) != len(set(room_ids)):
             raise ValueError(f"Duplicate room allocation(s) for exam {exam.id}: room_ids={room_ids}")
+        if self._topology_provider is None:
+            raise ValueError(
+                "ConstraintSeatingStrategy was constructed without a RoomTopologyProvider — "
+                "constraint seating cannot determine seat adjacency without one."
+            )
 
         registered_student_count = len(students)
         scheduled_student_count = sum(ra.allocated_students for ra in room_allocations)

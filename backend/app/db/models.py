@@ -81,6 +81,14 @@ class RoomModel(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     code: Mapped[str] = mapped_column(String(32), unique=True, index=True)
     capacity: Mapped[int] = mapped_column(Integer)
+    # Nullable: a room with neither set has no configured seat topology yet
+    # (sequential seating never needs one; constraint seating does — see
+    # app.domain.room.Room and app.seating.topology_provider). Added to an
+    # already-shipped table in Milestone 8 — see
+    # app.db.init_db._ensure_room_topology_columns for how an existing
+    # database file picks these columns up without Alembic.
+    rows: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    columns: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     exam_rooms: Mapped[list["ExamRoomModel"]] = relationship(back_populates="room")
 

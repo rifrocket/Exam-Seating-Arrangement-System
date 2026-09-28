@@ -22,7 +22,12 @@ from app.db.repositories import (
 )
 from app.db.session import get_db_session
 from app.domain import SeatingGeneration
-from app.seating import UnknownStrategyError
+from app.seating import (
+    RoomTopologyMismatchError,
+    RoomTopologyMissingError,
+    UnknownRoomTopologyError,
+    UnknownStrategyError,
+)
 from app.services.seating_generation import ExamNotFoundError, SeatingService
 
 router = APIRouter(tags=["seating"])
@@ -70,6 +75,8 @@ def generate_seating(
     except ExamNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except UnknownStrategyError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (RoomTopologyMissingError, RoomTopologyMismatchError, UnknownRoomTopologyError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     session.commit()
 

@@ -7,12 +7,16 @@ see docs/architecture.md.
 
 `topology` and `constraints` (Milestone 6) are the foundation
 `ConstraintSeatingStrategy` (Milestone 7, `strategies/constraint.py`) is
-built on. `topology_provider` (Milestone 7) is the boundary between a
-`Room` (code + physical capacity only) and a `SeatTopology` — see its
-module docstring for why capacity alone can't imply geometry. Nothing in
-this package imports FastAPI, SQLAlchemy, HTTP, the filesystem, ReportLab,
-or a repository. It operates purely on domain data handed to it by
-app.services.seating_generation.
+built on. `topology_provider` (Milestone 7, extended Milestone 8) is the
+abstract boundary between a `Room` (which has its own optional
+`rows`/`columns` as of Milestone 8) and a `SeatTopology` — see its module
+docstring for why capacity alone can't imply geometry. The concrete,
+repository-backed provider used in production
+(`RepositoryRoomTopologyProvider`) lives in
+`app.services.seating_generation`, not here, since it needs a repository.
+Nothing in this package imports FastAPI, SQLAlchemy, HTTP, the
+filesystem, ReportLab, or a repository. It operates purely on domain data
+handed to it by app.services.seating_generation.
 """
 
 from app.seating.constraints import (
@@ -39,6 +43,7 @@ from app.seating.topology import (
 )
 from app.seating.topology_provider import (
     RoomTopologyMismatchError,
+    RoomTopologyMissingError,
     RoomTopologyProvider,
     StaticRoomTopologyProvider,
     UnknownRoomTopologyError,
@@ -54,6 +59,7 @@ __all__ = [
     "RectangularRoomTopology",
     "RoomAllocation",
     "RoomTopologyMismatchError",
+    "RoomTopologyMissingError",
     "RoomTopologyProvider",
     "SeatAssignmentCandidate",
     "SeatAssignmentRecord",

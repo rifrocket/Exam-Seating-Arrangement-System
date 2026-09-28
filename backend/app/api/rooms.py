@@ -49,7 +49,7 @@ async def import_rooms(
         ],
         conflicts=[
             ConflictOut(
-                kind="room_capacity",
+                kind=c.kind,
                 key=c.key,
                 line_number=c.line_number,
                 existing_value=c.existing_value,
@@ -70,6 +70,6 @@ def list_rooms(
     items = repo.list(limit=limit, offset=offset)
     total = repo.count()
     return RoomListResponse(
-        items=[RoomOut(id=r.id, code=r.code, capacity=r.capacity) for r in items],
+        items=[RoomOut(id=r.id, code=r.code, capacity=r.capacity, rows=r.rows, columns=r.columns) for r in items],
         meta=PageMeta(total=total, limit=limit, offset=offset),
     )

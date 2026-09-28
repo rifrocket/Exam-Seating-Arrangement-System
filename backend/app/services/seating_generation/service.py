@@ -24,6 +24,7 @@ from app.repositories.seating_generation_repository import SeatingGenerationRepo
 from app.repositories.student_repository import StudentRepository
 from app.seating import RoomAllocation, SeatingEngine, get_strategy
 from app.services.seating_generation.records import ExamNotFoundError, SeatingGenerationOutcome
+from app.services.seating_generation.room_topology_provider import RepositoryRoomTopologyProvider
 
 
 def _student_sort_key(student: Student) -> tuple[int, str]:
@@ -63,7 +64,13 @@ class SeatingService:
         room_allocations = self._load_room_allocations(exam_id)
         students = self._load_registered_students(exam.course_id)
 
-        engine = SeatingEngine(get_strategy(strategy_name))
+        # Every strategy is constructed with this uniformly (see
+        # SeatingStrategy's own base __init__) — only ConstraintSeatingStrategy
+        # actually reads it. Built fresh per call, like the repositories
+        # this service already holds, rather than cached: it's a thin,
+        # stateless read-through wrapper over room_repository.
+        topology_provider = RepositoryRoomTopologyProvider(self._rooms)
+        engine = SeatingEngine(get_strategy(strategy_name, topology_provider=topology_provider))
         result = engine.run(exam, students, room_allocations)
 
         generation = self._seating_generations.add(

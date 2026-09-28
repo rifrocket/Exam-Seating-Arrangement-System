@@ -55,7 +55,7 @@ def _registration_to_domain(model: RegistrationModel) -> Registration:
 
 
 def _room_to_domain(model: RoomModel) -> Room:
-    return Room(id=model.id, code=model.code, capacity=model.capacity)
+    return Room(id=model.id, code=model.code, capacity=model.capacity, rows=model.rows, columns=model.columns)
 
 
 def _exam_to_domain(model: ExamModel) -> Exam:
@@ -223,8 +223,22 @@ class SqlAlchemyRoomRepository(RoomRepository):
         return self._session.scalar(select(func.count()).select_from(RoomModel)) or 0
 
     def add(self, entity: Room) -> Room:
-        model = RoomModel(code=entity.code, capacity=entity.capacity)
+        model = RoomModel(code=entity.code, capacity=entity.capacity, rows=entity.rows, columns=entity.columns)
         self._session.add(model)
+        self._session.flush()
+        return _room_to_domain(model)
+
+    def set_topology(self, room_id: int, rows: int, columns: int) -> Room:
+        """Backfills rows/columns on an existing room. Deliberately its
+        own narrow method rather than a generic update() — the only
+        caller is RoomImportService, configuring topology for a room that
+        doesn't have one yet (see its conflict policy for what happens
+        when one already does)."""
+        model = self._session.get(RoomModel, room_id)
+        if model is None:
+            raise ValueError(f"Room {room_id} does not exist.")
+        model.rows = rows
+        model.columns = columns
         self._session.flush()
         return _room_to_domain(model)
 

@@ -17,9 +17,22 @@ before creating anything, check_schema_compatibility() inspects whatever
 `exams` table already exists and refuses to proceed — loudly, with no
 attempt to alter or drop it — if it's missing a column this milestone
 requires. It never deletes or migrates data on its own.
+
+Milestone 8 adds `rooms.rows`/`rooms.columns` and takes the opposite,
+auto-migrating approach for that one specific case:
+`_ensure_room_topology_columns()` runs a plain `ALTER TABLE ... ADD
+COLUMN` for either column if it's missing from an existing `rooms` table.
+This is safe in a way the `exams` case above is not: both new columns are
+nullable and purely additive — every existing room row simply gets
+`rows=NULL, columns=NULL` ("topology not configured yet"), no existing
+data changes meaning, and no row becomes invalid. The `exams` columns
+above couldn't be handled this way because their *absence* would have
+left ambiguous, silently-wrong data (a schema requirement, not an
+optional extension); these two are the opposite case, so a loud
+`SchemaCompatibilityError` would only be friction, not a safety benefit.
 """
 
-from sqlalchemy import inspect
+from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
 
 from app.db import models  # noqa: F401  (ensures models are registered on Base.metadata)
@@ -52,6 +65,28 @@ def check_schema_compatibility(engine: Engine) -> None:
         )
 
 
+def _ensure_room_topology_columns(engine: Engine) -> None:
+    """Adds `rows`/`columns` to an existing `rooms` table if either is
+    missing. See this module's docstring for why this case (unlike
+    `check_schema_compatibility` above) auto-migrates instead of failing:
+    both columns are nullable and purely additive, so no existing row's
+    meaning changes and nothing can become invalid."""
+    inspector = inspect(engine)
+    if "rooms" not in inspector.get_table_names():
+        return  # Fresh database — create_all() will create the current schema directly.
+
+    existing_columns = {col["name"] for col in inspector.get_columns("rooms")}
+    missing = {"rows", "columns"} - existing_columns
+    if not missing:
+        return
+
+    with engine.begin() as connection:
+        if "rows" in missing:
+            connection.execute(text("ALTER TABLE rooms ADD COLUMN rows INTEGER"))
+        if "columns" in missing:
+            connection.execute(text('ALTER TABLE rooms ADD COLUMN "columns" INTEGER'))
+
+
 def init_db(engine: Engine | None = None) -> Engine:
     """Create any missing tables. Idempotent — safe to call on every app
     startup, since create_all() skips tables that already exist.
@@ -62,6 +97,7 @@ def init_db(engine: Engine | None = None) -> Engine:
     """
     engine = engine or get_engine()
     check_schema_compatibility(engine)
+    _ensure_room_topology_columns(engine)
     Base.metadata.create_all(bind=engine)
     return engine
 

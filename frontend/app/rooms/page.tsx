@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { Badge } from "@/components/ui/Badge";
 import { Card } from "@/components/ui/Card";
 import { CsvImportButton } from "@/components/ui/CsvImportButton";
 import { DownloadSampleButton } from "@/components/ui/DownloadSampleButton";
@@ -105,7 +106,7 @@ export default function RoomsPage() {
             <ErrorState message={listError} onRetry={load} />
           </div>
         ) : isLoading ? (
-          <TableSkeleton rows={6} columns={2} />
+          <TableSkeleton rows={6} columns={5} />
         ) : rooms.length === 0 ? (
           <div className="p-6">
             <EmptyState
@@ -123,6 +124,9 @@ export default function RoomsPage() {
               <Tr>
                 <Th>Room</Th>
                 <Th>Capacity</Th>
+                <Th>Rows</Th>
+                <Th>Columns</Th>
+                <Th>Topology</Th>
               </Tr>
             </Thead>
             <Tbody>
@@ -130,6 +134,15 @@ export default function RoomsPage() {
                 <Tr key={room.id}>
                   <Td className="font-medium text-text-primary">{room.code}</Td>
                   <Td>{room.capacity}</Td>
+                  <Td>{room.rows ?? "—"}</Td>
+                  <Td>{room.columns ?? "—"}</Td>
+                  <Td>
+                    {room.rows !== null && room.columns !== null ? (
+                      <Badge tone="success">Configured</Badge>
+                    ) : (
+                      <Badge tone="neutral">Not configured</Badge>
+                    )}
+                  </Td>
                 </Tr>
               ))}
             </Tbody>

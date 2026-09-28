@@ -55,6 +55,8 @@ export interface RoomOut {
   id: number;
   code: string;
   capacity: number;
+  rows: number | null;
+  columns: number | null;
 }
 
 export interface RoomImportResult {
