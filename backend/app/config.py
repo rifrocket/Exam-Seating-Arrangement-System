@@ -49,6 +49,15 @@ class Settings(BaseSettings):
     # allowed. See docs/architecture.md's "Database reset" section.
     admin_password: str | None = None
 
+    # Stored alongside admin_password for parity with the frontend's own
+    # ADMIN_USERNAME/ADMIN_PASSWORD pair (Milestone 16 standardizes the
+    # env var names across both sides) — not currently read by
+    # POST /admin/database/reset itself, which (per its own Milestone 15
+    # design) verifies only the password. Kept here rather than left
+    # unconfigurable so `make setup` has one place to write both admin
+    # values on the backend side.
+    admin_username: str | None = None
+
 
 @lru_cache
 def get_settings() -> Settings:

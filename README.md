@@ -3,6 +3,74 @@
 
 This project is a Python-based system designed to automate the process of generating seating arrangements for exams based on registration and scheduling data. It creates detailed PDF reports for exam seating and room ranges, ensuring efficient organization and management of exam sessions.
 
+> The current application is a `backend/` (FastAPI) + `frontend/` (Next.js)
+> pair — see **Setup and Running** below to actually run it. The
+> `main.py`/`models/`/`services/`/`views/` instructions further down this
+> file describe an earlier, standalone script version of this project.
+
+## Setup and Running
+
+Requires the backend's virtual environment (`backend/.venv`, with
+dependencies from `backend/pyproject.toml`) and the frontend's
+dependencies (`frontend/node_modules`, via `npm install`) to already be
+set up once, the normal way for each stack. `make` commands below only
+manage *running* the two services, not installing their dependencies.
+
+### Initial setup
+
+```bash
+make setup
+```
+
+Interactively asks for the backend port, frontend port, admin username,
+and admin password (input hidden, confirmed, rejected if empty), then
+writes:
+
+- `backend/.env` — `BACKEND_HOST`, `BACKEND_PORT`, `APP_ADMIN_USERNAME`,
+  `APP_ADMIN_PASSWORD`, and `APP_CORS_ORIGINS` (derived from the chosen
+  frontend port, so the backend actually accepts requests from it).
+- `frontend/.env.local` — `FRONTEND_HOST`, `FRONTEND_PORT`,
+  `NEXT_PUBLIC_API_URL` (derived from the chosen backend port),
+  `ADMIN_USERNAME`, `ADMIN_PASSWORD`.
+
+Both files hold secrets and are **never committed** — only
+`backend/.env.example`/`frontend/.env.example` (safe templates, no real
+values) are tracked in git. Re-running `make setup` preserves any
+unrelated settings already in either file and only updates the values
+above.
+
+The admin username/password is the **same credential on both sides** —
+`ADMIN_PASSWORD` (frontend login) and `APP_ADMIN_PASSWORD` (backend,
+protects `POST /admin/database/reset`) must match; `make setup` writes
+both from one prompt.
+
+### Normal development
+
+```bash
+make start   # starts (or cleanly restarts) both services on the configured ports
+make stop    # stops both; safe to run even if nothing is running
+```
+
+Runs the backend with `uvicorn --reload` and the frontend with `next
+dev`, as plain background processes tracked by PID file under `.tmp/`
+(gitignored). `make start` never leaves duplicate processes running —
+it stops whatever it previously started first.
+
+### PM2
+
+```bash
+make start-pm2
+```
+
+An alternative to `make start`/`make stop` for a more production-style,
+supervised setup (auto-restart on crash), using `ecosystem.config.js`.
+**Requires PM2 to already be installed** (`npm install -g pm2`) —
+`make start-pm2` checks for it and exits with a clear message if it's
+missing, rather than installing it silently. This also runs a
+production frontend build (`next build`) first, since PM2 runs `next
+start`, not `next dev`. Don't run this at the same time as `make start`
+— pick one process-management approach per machine.
+
 ## Features
 
 - **Automated Data Processing**:
