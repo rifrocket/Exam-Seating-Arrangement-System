@@ -261,6 +261,31 @@ def test_four_course_separation() -> None:
     assert second.assignments == result.assignments
 
 
+def test_five_course_separation() -> None:
+    """Five courses, four students each, a 4x5=20 room — same generic
+    algorithm as the 2/3/4/6-course tests above, no course-count-specific
+    logic anywhere."""
+    topology = RectangularRoomTopology(room_id=1, rows=4, columns=5)
+    provider = _FixedTopologyProvider({1: topology})
+    mapping = _course_mapping(4, 4, 4, 4, 4)
+    students = _students(20)
+    room_allocations = [RoomAllocation(room_id=1, room_code="X", allocated_students=20, capacity=20)]
+    strategy = ConstraintSeatingStrategy(topology_provider=provider, student_course_ids=mapping)
+
+    result = strategy.generate(EXAM, students, room_allocations)
+
+    assert result.assigned_student_count == 20
+    assert {mapping[a.student_id] for a in result.assignments} == {100, 200, 300, 400, 500}
+    seat_keys = {a.seat_number for a in result.assignments}
+    assert len(seat_keys) == 20
+
+    real_quality = evaluate_seating_quality(_real_candidates(result.assignments, topology), mapping, {1: topology})
+    naive_quality = evaluate_seating_quality(
+        _naive_course_blocked_candidates(topology, students, mapping), mapping, {1: topology}
+    )
+    assert real_quality.same_course_adjacent_pairs < naive_quality.same_course_adjacent_pairs
+
+
 def test_six_course_separation_with_no_special_casing() -> None:
     """Section 10's exact shape: 6x3 = 18 seats, six courses of 3 each —
     proves the algorithm needs no course-count-specific branching."""
@@ -379,6 +404,29 @@ def test_single_course_default_via_exam_course_id_also_matches_sequential() -> N
     sequential_result = SequentialSeatingStrategy().generate(EXAM, students, room_allocations)
 
     assert constraint_result.assignments == sequential_result.assignments
+
+
+# --- determinism (standalone, dedicated check) ------------------------------
+
+
+def test_anti_cheating_default_is_deterministic_across_repeated_runs() -> None:
+    """The same input (unequal course sizes, on purpose — the case most
+    likely to expose any hidden nondeterminism in the 'greatest remaining
+    population' tie-breaking) must always produce the same assignment
+    output when run twice, with no randomization anywhere in the path."""
+    topology = RectangularRoomTopology(room_id=1, rows=4, columns=5)
+    provider = _FixedTopologyProvider({1: topology})
+    mapping = _course_mapping(12, 4, 3, 1)
+    students = _students(20)
+    room_allocations = [RoomAllocation(room_id=1, room_code="X", allocated_students=20, capacity=20)]
+    strategy = ConstraintSeatingStrategy(topology_provider=provider, student_course_ids=mapping)
+
+    first = strategy.generate(EXAM, students, room_allocations)
+    second = strategy.generate(EXAM, students, room_allocations)
+    third = strategy.generate(EXAM, students, room_allocations)
+
+    assert first.assignments == second.assignments == third.assignments
+    assert first.unassigned_student_ids == second.unassigned_student_ids == third.unassigned_student_ids
 
 
 # --- capacity shortage in an anti-cheating (multi-course) context ----------
