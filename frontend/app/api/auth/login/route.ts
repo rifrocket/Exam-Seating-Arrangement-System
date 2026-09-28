@@ -25,9 +25,16 @@ export async function POST(request: NextRequest) {
 
   const token = await createSessionToken(username);
   const response = NextResponse.json({ ok: true });
+  // `secure` must reflect whether *this request* actually arrived over
+  // HTTPS, not just NODE_ENV: a production build served over plain HTTP
+  // (e.g. a bare IP:port with no TLS) would otherwise get a cookie the
+  // browser silently refuses to store, making login look broken.
+  // `x-forwarded-proto` covers being behind a TLS-terminating reverse proxy.
+  const forwardedProto = request.headers.get("x-forwarded-proto");
+  const isHttps = forwardedProto ? forwardedProto === "https" : request.nextUrl.protocol === "https:";
   response.cookies.set(SESSION_COOKIE_NAME, token, {
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
+    secure: isHttps,
     sameSite: "lax",
     path: "/",
     maxAge: SESSION_MAX_AGE_SECONDS,
