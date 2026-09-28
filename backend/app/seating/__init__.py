@@ -14,11 +14,20 @@ docstring for why capacity alone can't imply geometry. The concrete,
 repository-backed provider used in production
 (`RepositoryRoomTopologyProvider`) lives in
 `app.services.seating_generation`, not here, since it needs a repository.
+
+`anti_cheating` (this milestone) holds the deterministic, topology-aware
+heuristics `ConstraintSeatingStrategy` uses by default to spatially
+separate different courses' students instead of letting them cluster —
+see that module's own docstring and docs/architecture.md's "Anti-cheating
+seating" section. `quality_metrics` is a pure, test-only measurement
+helper for that behavior; nothing in production imports it.
+
 Nothing in this package imports FastAPI, SQLAlchemy, HTTP, the
 filesystem, ReportLab, or a repository. It operates purely on domain data
 handed to it by app.services.seating_generation.
 """
 
+from app.seating.anti_cheating import order_students_for_placement, same_course_penalty
 from app.seating.constraints import (
     Constraint,
     ConstraintEvaluation,
@@ -33,6 +42,7 @@ from app.seating.constraints import (
 )
 from app.seating.engine import SeatingEngine, UnknownStrategyError, get_strategy
 from app.seating.models import RoomAllocation, SeatAssignmentRecord, SeatingResult
+from app.seating.quality_metrics import SeatingQualityReport, evaluate_seating_quality
 from app.seating.strategies.constraint import ConstraintSeatingStrategy
 from app.seating.strategy import SeatingStrategy
 from app.seating.topology import (
@@ -66,6 +76,7 @@ __all__ = [
     "SeatPosition",
     "SeatTopology",
     "SeatingEngine",
+    "SeatingQualityReport",
     "SeatingResult",
     "SeatingStrategy",
     "SeparateCoursesConstraint",
@@ -76,5 +87,8 @@ __all__ = [
     "UnknownRoomTopologyError",
     "UnknownStrategyError",
     "evaluate_constraints",
+    "evaluate_seating_quality",
     "get_strategy",
+    "order_students_for_placement",
+    "same_course_penalty",
 ]

@@ -331,9 +331,15 @@ def test_soft_constraints_still_evaluated_with_blocked_seats_present() -> None:
     assert seat_by_student[2] == 4
 
 
-def test_course_separation_still_works_with_blocked_seats() -> None:
-    """The default (student_course_ids-driven) course-separation behavior
-    from the session-generation path is unaffected by blocked seats."""
+def test_anti_cheating_default_still_respects_blocked_seats() -> None:
+    """The default (student_course_ids-driven) anti-cheating behavior is
+    unaffected by blocked seats: seat 3 is never a candidate at all. With
+    only one student per course here there is no same-course neighbor to
+    score against, so placement falls back to plain earliest-available-
+    seat order — seat 2 is *not* skipped, since adjacency to a
+    *different* course is never penalized (see
+    tests/seating/test_anti_cheating.py for the actual course-separation
+    behavior with multiple same-course students)."""
     topology = RectangularRoomTopology(room_id=1, rows=1, columns=5, blocked_seat_numbers={3})
     provider = _FixedTopologyProvider({1: topology})
     room_allocations = [RoomAllocation(room_id=1, room_code="500", allocated_students=5, capacity=5)]
@@ -346,7 +352,7 @@ def test_course_separation_still_works_with_blocked_seats() -> None:
     seat_by_student = {a.student_id: a.seat_number for a in result.assignments}
     assert 3 not in seat_by_student.values()
     assert seat_by_student[1] == 1
-    assert seat_by_student[2] == 4  # different course, seat 2 skipped for the same reason as above
+    assert seat_by_student[2] == 2
 
 
 def test_blocked_seat_result_is_deterministic() -> None:

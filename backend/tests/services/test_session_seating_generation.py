@@ -240,16 +240,39 @@ def test_session_generation_is_deterministic(db_session: Session) -> None:
     assert first_keys == second_keys
 
 
-def test_course_separation_is_preferred_when_an_alternative_exists(db_session: Session) -> None:
-    """One room, 1x10 (a single row) shared logically across a session with
-    two courses of 5 students each (10 seats exactly). Course-grouped
-    ordering (course_id, student_number) means course A fills seats 1-5
-    and course B fills seats 6-10 — no course boundary seat ends up
-    adjacent to a different-course seat purely by the deterministic fill
-    order, which is exactly the "prefer separation" behavior working as
-    intended without needing a contrived edge case."""
-    exam_a = _seed_exam_with_room(db_session, "CS101", "401", 5, 1, 5, 5, "A")
-    exam_b = _seed_exam_with_room(db_session, "MATH101", "402", 5, 1, 5, 5, "B")
+def test_course_separation_minimizes_adjacency_compared_to_naive_blocking(db_session: Session) -> None:
+    """One *shared* room, 1x10 (a single row), with two courses of 5
+    students each (10 seats exactly) both allocated into it — unlike
+    `_seed_exam_with_room` (which gives each exam its own separate room),
+    this is the genuine "courses actually share physical seats" case.
+    Before this milestone, course-grouped ordering meant course A filled
+    seats 1-5 and course B filled seats 6-10 (a naive contiguous block per
+    course, 8 same-course-adjacent pairs out of 9 possible) — that was the
+    anti-cheating *problem* this milestone fixes, not a property to
+    preserve. The real default must produce materially fewer same-course-
+    adjacent pairs than that naive baseline, while still seating everyone
+    and keeping both courses fully represented."""
+    course_a = SqlAlchemyCourseRepository(db_session).add(Course(id=None, code="CS101", name="CS101"))
+    course_b = SqlAlchemyCourseRepository(db_session).add(Course(id=None, code="MATH101", name="MATH101"))
+    exam_a = SqlAlchemyExamRepository(db_session).add(
+        Exam(id=None, course_id=course_a.id, exam_date=DATE, time_slot=TIME_SLOT, expected_student_count=5)
+    )
+    exam_b = SqlAlchemyExamRepository(db_session).add(
+        Exam(id=None, course_id=course_b.id, exam_date=DATE, time_slot=TIME_SLOT, expected_student_count=5)
+    )
+    shared_room = SqlAlchemyRoomRepository(db_session).add(Room(id=None, code="401", capacity=10, rows=1, columns=10))
+    exam_room_repo = SqlAlchemyExamRoomRepository(db_session)
+    exam_room_repo.add(ExamRoom(id=None, exam_id=exam_a.id, room_id=shared_room.id, allocated_students=5))
+    exam_room_repo.add(ExamRoom(id=None, exam_id=exam_b.id, room_id=shared_room.id, allocated_students=5))
+
+    student_repo = SqlAlchemyStudentRepository(db_session)
+    registration_repo = SqlAlchemyRegistrationRepository(db_session)
+    for prefix, course in (("A", course_a), ("B", course_b)):
+        for i in range(1, 6):
+            student = student_repo.add(Student(id=None, student_number=f"{prefix}{i:03d}", full_name=f"{prefix} {i}"))
+            registration_repo.add(Registration(id=None, student_id=student.id, course_id=course.id))
+    db_session.commit()
+
     session = _session_service(db_session).create_session([exam_a.id, exam_b.id])
     db_session.commit()
 
@@ -257,18 +280,19 @@ def test_course_separation_is_preferred_when_an_alternative_exists(db_session: S
     db_session.commit()
 
     assignments = SqlAlchemySeatAssignmentRepository(db_session).list_by_generation(outcome.generation.id)
-    student_repo = SqlAlchemyStudentRepository(db_session)
-    by_room = {}
-    for a in assignments:
-        by_room.setdefault(a.room_id, []).append(a)
-    for room_assignments in by_room.values():
-        room_assignments.sort(key=lambda a: a.seat_number)
-        course_prefixes = [
-            (student_repo.get(a.student_id)).student_number[0] for a in room_assignments  # type: ignore[union-attr]
-        ]
-        # Within a single room, every seat holds a single course's
-        # students contiguously — no interleaving of A and B.
-        assert course_prefixes == sorted(course_prefixes)
+    assert len(assignments) == 10
+    course_by_seat = {
+        a.seat_number: (student_repo.get(a.student_id)).student_number[0]  # type: ignore[union-attr]
+        for a in assignments
+    }
+
+    assert sorted(course_by_seat.values()) == sorted(["A"] * 5 + ["B"] * 5)
+    seat_numbers = sorted(course_by_seat)
+    same_course_adjacent_pairs = sum(
+        1 for seat in seat_numbers[:-1] if course_by_seat[seat] == course_by_seat[seat + 1]
+    )
+    naive_contiguous_pairs = 4 + 4  # AAAAA BBBBB: 4 internal same-course pairs per 5-seat block
+    assert same_course_adjacent_pairs < naive_contiguous_pairs
 
 
 # --- capacity semantics -----------------------------------------------------

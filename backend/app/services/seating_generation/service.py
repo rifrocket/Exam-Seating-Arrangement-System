@@ -76,13 +76,16 @@ def _merge_shared_room_allocations(allocations: list[RoomAllocation]) -> list[Ro
 
 def _session_student_sort_key(course_id: int, student: Student) -> tuple[int, int, str]:
     """Deterministic ascending order by (course_id, student_number) for a
-    multi-course session — grouping each course's students together
-    (rather than interleaving by student number alone) is what lets the
-    constructive greedy strategy naturally seat each course as a
-    contiguous block, which is exactly what `SeparateCoursesConstraint`
-    prefers, without needing any backtracking to get there. A single-exam
-    generation never calls this — it keeps using `_student_sort_key`
-    unchanged, since one exam only ever has one course_id anyway."""
+    multi-course session. This only fixes each course's own *relative*
+    order (still ascending student_number within a course) for stable
+    tie-breaking — it does not determine the strategy's actual placement
+    order. `ConstraintSeatingStrategy` re-interleaves this list by course
+    internally before placing anyone (see `app.seating.anti_cheating`),
+    specifically so this course-grouped shape here does *not* let one
+    course claim a long unbroken run of placement turns before another
+    gets one. A single-exam generation never calls this — it keeps using
+    `_student_sort_key` unchanged, since one exam only ever has one
+    course_id anyway."""
     return (course_id, len(student.student_number), student.student_number)
 
 

@@ -588,13 +588,12 @@ asserts the two strategies produce byte-identical assignments in that
 case.
 
 `ConstraintSeatingStrategy`'s default (`constraint_set=None`, as opposed
-to an explicitly empty `ConstraintSet()`) auto-builds one
-`SeparateCoursesConstraint` from a `StudentSeatingContext` per registered
-student. In production today this is always trivially satisfied — every
-student in a single-course exam shares the same `course_id`, since mixed-
-course seating does not exist — but it does exercise the real
-constraint-evaluation code path on every generation, rather than leaving
-it entirely untested against live data.
+to an explicitly empty `ConstraintSet()`) builds a
+`StudentSeatingContext` per registered student regardless. At the time
+this milestone shipped, mixed-course seating did not exist yet, so this
+was always trivially a single-course mapping — see **Anti-cheating
+seating** (Milestone 11) below for what the default actually does with
+that mapping once multi-course sessions exist.
 
 ### Capacity semantics are unchanged
 
@@ -786,13 +785,15 @@ diff for this milestone). `generate_session()`:
    needs this collapsed *before* the engine ever sees it.
 3. Builds one combined, deterministically-ordered student list —
    ordered by **`(course_id, student_number)`**, not student_number
-   alone. Course-grouping the fill order (rather than interleaving by
-   number) is what lets the existing greedy constructive strategy
-   naturally seat each course as a contiguous block — exactly what
-   `SeparateCoursesConstraint` prefers — without needing any
-   backtracking to get there. A single-exam generation keeps using its
-   original, unchanged sort (one exam only ever has one course_id
-   anyway).
+   alone, purely so each course's own students stay in a stable,
+   deterministic relative order for tie-breaking. This grouping does
+   *not* control the strategy's actual placement order any more — see
+   **Anti-cheating seating** (Milestone 11): `ConstraintSeatingStrategy`
+   re-interleaves this list internally by course before placing anyone,
+   specifically so one course can't claim a long unbroken run of
+   placement turns before another gets one. A single-exam generation
+   keeps using its original, unchanged sort (one exam only ever has one
+   course_id anyway, so there is nothing to interleave).
 4. Passes the resulting `student_id -> course_id` mapping to
    `ConstraintSeatingStrategy` directly (a new, optional
    `student_course_ids` constructor argument) instead of letting it
@@ -1015,6 +1016,148 @@ gained a third, separately-labeled diagnostic item for
 `usable_capacity_shortage`, alongside the two Milestone 9 already showed.
 No seat-map UI, no per-seat click-to-block control anywhere — blocking
 remains CSV-import-only, matching the persistence decision above.
+
+## Anti-cheating seating (Milestone 11)
+
+Milestone 7's `ConstraintSeatingStrategy` could already seat several
+courses into one shared room (Milestone 9), but its own default soft
+constraint (`SeparateCoursesConstraint`) preferred that adjacent seats
+hold the *same* course — i.e. each course seated as one contiguous
+block. That is exactly backwards for a real exam room: two courses
+sharing a room is supposed to make copying harder, not produce
+
+```
+P P P P P
+P P P P P
+C C C C C
+C C C C C
+```
+
+Milestone 11 replaces that default with a topology-aware anti-cheating
+heuristic, without touching `SequentialSeatingStrategy`, without
+bypassing `SeatingEngine`/`SeatingStrategy`, and without adding a second
+topology system — the new code only ever calls `SeatTopology`'s existing
+`same_row`/`same_column`/`is_adjacent`/`distance`.
+
+### Two pieces, both in `app/seating/anti_cheating.py`
+
+1. **Placement order** — `order_students_for_placement(students,
+   student_course_ids)` interleaves the students handed to the greedy
+   placement loop by course: on every turn it takes the next student from
+   whichever course currently has the most students still waiting, ties
+   broken by the smallest course_id. This is what stops one course from
+   claiming a long unbroken run of placement turns before another course
+   gets one — the root cause of contiguous blocks even when individual
+   seat choices look locally reasonable. It is generic across course
+   *count* by construction: 2, 3, 4, 6, or 50 courses all go through the
+   same loop, and a dominant course's turns simply taper off as its own
+   remaining count drops to meet the next-largest course (see the
+   function's own docstring for a worked example with a 12/4 split).
+2. **Candidate scoring** — `same_course_penalty(candidate, course_id,
+   placed, student_course_ids, topology)` replaces the old soft-
+   constraint-violation *count* as the greedy loop's tie-breaking score
+   among candidates that already survive hard-constraint filtering. It
+   compares `candidate` only against **the same course's** already-placed
+   positions (a different course nearby is never penalized — mixing
+   courses is the goal), weighing, worst to least severe: orthogonal
+   same-course adjacency, diagonal same-course adjacency, same-row
+   concentration, same-column concentration, local density (any
+   same-course neighbor within `LOCAL_DENSITY_RADIUS` seat-units), and
+   raw proximity to the nearest same-course student. The weights are
+   chosen so each tier dominates every lower tier combined (a
+   deliberately lexicographic-like ordering expressed as arithmetic, not
+   a tuned model) — see the module's own docstring for the exact values
+   and reasoning.
+
+Both are **skipped entirely** — falling back to the exact original
+zero-violations-wins behavior — whenever fewer than two distinct courses
+are present in the student/course mapping. A single-course exam has no
+other course to separate from; applying anti-cheating scoring anyway
+would scatter that exam's own students for no reason.
+`tests/services/test_constraint_seating_integration.py::test_constraint_and_sequential_strategies_agree_when_unconstrained`
+and several tests in `tests/seating/test_anti_cheating.py` pin this down
+directly: with one course, `ConstraintSeatingStrategy` still produces
+byte-identical assignments to `SequentialSeatingStrategy`.
+
+### Where this plugs into `ConstraintSeatingStrategy`
+
+Only the strategy's own *default* (`constraint_set=None`, as opposed to
+an explicitly-supplied — even empty — `ConstraintSet()`) uses any of
+this. An explicit `ConstraintSet` (however it was built — empty, hard
+constraints only, or with a caller's own `SeparateCoursesConstraint`)
+opts out entirely and runs the original, unmodified boolean hard/soft
+constraint evaluation from Milestone 7 — this is what keeps every
+existing constraint-model test (`test_constraints.py`, most of
+`test_constraint_strategy.py`) byte-for-byte unchanged; only the two
+tests that exercised the *old default's* clustering behavior specifically
+needed updating, since that behavior was the thing being fixed. In
+production, `SeatingService.generate()` and `.generate_session()` never
+supply an explicit `ConstraintSet`, so both single-exam and multi-course
+session generation always go through the new default path — for a
+single-exam generation this is a no-op (one course), and for a session it
+is exactly where anti-cheating separation matters.
+
+`SeparateCoursesConstraint` itself (`app/seating/constraints.py`) still
+exists, is still fully tested, and still means what it always meant
+(prefer same-course adjacency) — it simply is not what
+`ConstraintSeatingStrategy` reaches for by default anymore. It remains
+available as an explicit, opt-in constraint for a caller with a genuinely
+different goal (e.g. deliberately keeping one course together for
+logistics reasons), the same way `StudentsNotAdjacentConstraint` remains
+available as an explicit hard constraint.
+
+### This is a heuristic, not a solver
+
+Exactly like `ConstraintSeatingStrategy`'s own greedy placement (Milestone
+7), this is a deterministic constructive heuristic: no OR-Tools, no
+CP-SAT, no ILP, no backtracking, no graph-coloring solver, no genetic
+algorithm, no simulated annealing, no machine learning, and no
+randomness. It does **not** guarantee a globally optimal spatial
+arrangement, and does not claim any particular seating matrix is "the"
+correct answer for a given input — only that it materially reduces
+same-course adjacency relative to the naive course-blocked ordering this
+milestone replaces. `app/seating/quality_metrics.py`'s
+`evaluate_seating_quality` (pure, test-only, never imported by production
+code) is what the test suite uses to check that "materially reduces"
+claim on representative cases (2/3/4/6-course, unequal course sizes,
+blocked seats present) — see that module's own docstring for exactly
+what each measurement means (same-course adjacent pairs, diagonal pairs,
+local pair count, row/column distribution) and its explicit statement
+that it does not define a single combined "score" or claim optimality.
+
+### What is intentionally *not* solved by this milestone
+
+- No proctor/invigilator seating or allocation.
+- No student behavioral profiling, biometric integration, or
+  surveillance functionality of any kind.
+- No manual drag-and-drop seat editor — blocking and course assignment
+  remain exactly as configured elsewhere (CSV import, registrations).
+- No admin-configurable weights for the scoring tiers above — the
+  weights are fixed constants in `anti_cheating.py`, matching this
+  milestone's "a simple deterministic scoring model is preferred, do not
+  over-engineer" instruction; a future milestone could expose them if a
+  real need for tuning ever appears.
+- No support for combining a caller-supplied hard constraint (e.g.
+  `StudentsNotAdjacentConstraint`) with the anti-cheating default
+  *simultaneously* — supplying any explicit `ConstraintSet` opts out of
+  anti-cheating entirely (see above). Nothing in production needs this
+  combination today (there is no admin UI for custom hard constraints at
+  all — see "What is intentionally deferred" below); a future milestone
+  that adds one would need to decide how the two interact.
+- No claim of finding a feasible seating whenever one exists, or of
+  finding the spatially-best seating among all feasible ones — same
+  limitation `ConstraintSeatingStrategy`'s greedy placement has always
+  had (Milestone 7).
+
+### Frontend
+
+No new page, no seating editor. The exam detail page shows a small
+"Constraint strategy: anti-cheating spatial separation enabled" note
+whenever the Constraint strategy is selected; the session detail page
+(which only ever generates with the constraint strategy) shows the same
+note unconditionally. Neither changes what the strategy selector offers,
+the result stats shown, or how capacity diagnostics/warnings/assignments
+are displayed.
 
 ## Persistence boundary
 

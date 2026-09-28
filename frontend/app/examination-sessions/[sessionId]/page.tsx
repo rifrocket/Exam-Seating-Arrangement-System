@@ -197,6 +197,9 @@ export default function ExaminationSessionDetailPage() {
             />
 
             <div className="flex flex-col gap-4 p-5">
+              <p className="text-xs text-text-secondary">
+                Constraint strategy: anti-cheating spatial separation enabled
+              </p>
               {generateError && <ErrorState message={generateError} />}
 
               {latest && (
