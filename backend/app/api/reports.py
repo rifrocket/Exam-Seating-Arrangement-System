@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.db.repositories import (
     SqlAlchemyCourseRepository,
+    SqlAlchemyExaminationSessionRepository,
     SqlAlchemyExamRepository,
     SqlAlchemyExamRoomRepository,
     SqlAlchemyRoomRepository,
@@ -35,6 +36,7 @@ def _report_service(session: Session = Depends(get_db_session)) -> ReportService
         course_repository=SqlAlchemyCourseRepository(session),
         room_repository=SqlAlchemyRoomRepository(session),
         student_repository=SqlAlchemyStudentRepository(session),
+        examination_session_repository=SqlAlchemyExaminationSessionRepository(session),
     )
 
 

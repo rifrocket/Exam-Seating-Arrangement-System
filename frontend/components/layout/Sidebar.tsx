@@ -9,6 +9,7 @@ import {
   GraduationCap,
   LayoutDashboard,
   ListChecks,
+  Users2,
   Users,
   X,
 } from "lucide-react";
@@ -23,6 +24,7 @@ const NAV_ITEMS = [
   { href: "/exams", label: "Exams", icon: ListChecks },
   { href: "/schedule", label: "Schedule", icon: CalendarClock },
   { href: "/rooms", label: "Rooms", icon: Building2 },
+  { href: "/examination-sessions", label: "Examination Sessions", icon: Users2 },
   { href: "/seating-generations", label: "Seating Generations", icon: GraduationCap },
   { href: "/reports", label: "Reports", icon: FileBarChart },
 ];

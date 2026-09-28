@@ -19,8 +19,9 @@ from app.db.repositories import (
     SqlAlchemyStudentRepository,
 )
 from app.domain import Course, Exam, ExamRoom, GenerationStatus, Registration, Room, Student
-from app.seating import UnknownStrategyError
+from app.seating import RoomAllocation, UnknownStrategyError
 from app.services.seating_generation import ExamNotFoundError, SeatingService
+from app.services.seating_generation.service import _merge_shared_room_allocations
 
 
 def _make_service(db_session: Session) -> SeatingService:
@@ -142,3 +143,42 @@ def test_unknown_strategy_raises(db_session: Session) -> None:
 
     with pytest.raises(UnknownStrategyError):
         service.generate(exam.id, strategy_name="does-not-exist")
+
+
+# --- _merge_shared_room_allocations (Milestone 9 session support) ----------
+
+
+def test_merge_passes_through_rooms_used_by_only_one_exam_unchanged() -> None:
+    allocations = [
+        RoomAllocation(room_id=1, room_code="A", allocated_students=10, capacity=10),
+        RoomAllocation(room_id=2, room_code="B", allocated_students=5, capacity=5),
+    ]
+
+    merged = _merge_shared_room_allocations(allocations)
+
+    assert merged == allocations
+
+
+def test_merge_sums_allocated_students_for_a_shared_room_without_double_counting_capacity() -> None:
+    allocations = [
+        RoomAllocation(room_id=1, room_code="401", allocated_students=10, capacity=20),
+        RoomAllocation(room_id=1, room_code="401", allocated_students=10, capacity=20),
+    ]
+
+    merged = _merge_shared_room_allocations(allocations)
+
+    assert len(merged) == 1
+    assert merged[0].allocated_students == 20
+    assert merged[0].capacity == 20  # not 40 — it's one physical room, counted once
+
+
+def test_merge_preserves_first_appearance_order() -> None:
+    allocations = [
+        RoomAllocation(room_id=2, room_code="B", allocated_students=5, capacity=5),
+        RoomAllocation(room_id=1, room_code="A", allocated_students=10, capacity=20),
+        RoomAllocation(room_id=1, room_code="A", allocated_students=10, capacity=20),
+    ]
+
+    merged = _merge_shared_room_allocations(allocations)
+
+    assert [ra.room_id for ra in merged] == [2, 1]

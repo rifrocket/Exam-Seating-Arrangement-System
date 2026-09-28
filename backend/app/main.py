@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.examination_sessions import router as examination_sessions_router
 from app.api.exams import router as exams_router
 from app.api.health import router as health_router
 from app.api.registrations import router as registrations_router
@@ -48,6 +49,7 @@ def create_app() -> FastAPI:
     app.include_router(exams_router)
     app.include_router(rooms_router)
     app.include_router(seating_router)
+    app.include_router(examination_sessions_router)
     app.include_router(reports_router)
     return app
 

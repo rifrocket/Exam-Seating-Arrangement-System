@@ -160,9 +160,14 @@ class SeatingGenerateRequest(BaseModel):
     strategy: str = "sequential"
 
 
+class SessionSeatingGenerateRequest(BaseModel):
+    strategy: str = "constraint"
+
+
 class SeatingGenerationOut(BaseModel):
     id: int
-    exam_id: int
+    exam_id: int | None
+    session_id: int | None
     strategy_name: str
     status: str
     total_registered: int
@@ -197,8 +202,36 @@ class SeatAssignmentOut(BaseModel):
     student_number: str
     student_name: str
     seat_number: int
+    exam_id: int
+    course_id: int
+    course_code: str
 
 
 class SeatAssignmentListResponse(BaseModel):
     generation: SeatingGenerationOut
     items: list[SeatAssignmentOut]
+
+
+class ExaminationSessionCreateRequest(BaseModel):
+    exam_ids: list[int]
+
+
+class ExaminationSessionExamOut(BaseModel):
+    exam_id: int
+    course_id: int
+    course_code: str
+    course_name: str
+
+
+class ExaminationSessionOut(BaseModel):
+    id: int
+    exam_date: date
+    time_slot: str
+    exams: list[ExaminationSessionExamOut]
+    participant_count: int
+    room_codes: list[str]
+
+
+class ExaminationSessionListResponse(BaseModel):
+    items: list[ExaminationSessionOut]
+    meta: PageMeta

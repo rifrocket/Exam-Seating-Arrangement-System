@@ -118,9 +118,11 @@ Concretely, as enforced today:
 ## Domain boundaries
 
 Nine *persisted* entities exist as of Milestone 3 (see below for `Room`'s
-Milestone 8 topology fields). `ExaminationSession` (Milestone 8) is a
-tenth domain concept but is deliberately **not** persisted — see
-**Examination session foundation**.
+Milestone 8 topology fields). `ExaminationSession` and its `SessionExam`
+join (Milestone 9) are two more, persisted specifically because a real
+multi-course generation workflow needs a stable id to create, list,
+inspect, and generate against — see **Examination sessions and
+multi-course seating**.
 
 - **Student** `(id, student_number, full_name)` — full name stored
   complete; any truncation (e.g. the legacy 3-token name) is a
@@ -686,17 +688,23 @@ already applied to capacity (`room_capacity` conflicts). `GET /rooms`
 exposes `rows`/`columns` (`null` when unconfigured), and the Rooms page
 shows them plus a `Configured`/`Not configured` badge.
 
-## Examination session foundation (Milestone 8: domain concept only, not persisted)
+## Examination sessions and multi-course seating (Milestone 8 domain concept; Milestone 9 persists it and wires up generation)
 
 ```
 Exam
     = one course's scheduled examination (course, date, time, rooms).
 ExaminationSession
     = a shared seating session grouping one or more compatible Exams.
+Session participants
+    = each session exam's registered students, combined into one
+      list of StudentSeatingContext (student_id, course_id).
+Session seating
+    = one SeatingGeneration using one strategy, built from every
+      session exam's combined room allocations and students.
 ```
 
 `Exam` is not overloaded to mean this — `ExaminationSession`
-(`app/domain/examination_session.py`) is a separate, pure domain concept:
+(`app/domain/examination_session.py`) is a separate domain concept:
 
 ```python
 @dataclass(frozen=True)
@@ -707,32 +715,171 @@ class ExaminationSession:
     time_slot: str
 ```
 
-`build_examination_session(exams) -> ExaminationSession` validates that
-every given exam shares the same `exam_date` and `time_slot`, raising
-`IncompatibleExamScheduleError` otherwise — a session represents one
-shared seating event, not an arbitrary bundle of exams. A session of
-exactly one exam is always valid, which is how the existing single-exam
-MVP conceptually fits this model without anything about today's behavior
-needing to change.
+Milestone 8 introduced this as a pure, non-persisted concept. Milestone 9
+persists it (`ExaminationSessionModel` + a `SessionExamModel` join table —
+see **Persistence** below) and adds the actual multi-course generation
+workflow, because a real user-facing workflow needs a session id stable
+enough to create, list, inspect, and generate against across separate
+requests — a purely in-memory session could not do that.
 
-`build_session_participants(session, students_by_exam_id, course_id_by_exam_id) ->
-list[StudentSeatingContext]` combines each exam's registered students into
-one participant list. A student registered in more than one of the
-session's exams raises `DuplicateStudentInSessionError` — never silently
-deduplicated or double-seated; this milestone does not define what "the
-same student in two exams at once" should mean. `StudentSeatingContext`
-(student_id + course_id) moved from `app.seating.constraints` to
-`app.domain` in this milestone specifically so both this function and
-`ConstraintSeatingStrategy`'s own single-exam path can produce it without
-either package depending on the other.
+### Creating a session (`ExaminationSessionService.create_session`)
 
-**This is domain foundation only.** Nothing wires it into
-`POST /exams/{exam_id}/seating/generate`, which still generates seating
-for exactly one exam, exactly as before — no behavior changed. There is
-no session-generation API, no `ExaminationSession` persistence, and no
-frontend for it. See **What is intentionally deferred** for what building
-on this foundation would still require (room-sharing semantics across
-exams, a real generation endpoint, mixed-course seating itself).
+Follows this exact order, so a caller always learns about the *first*
+real problem with their requested exam combination:
+
+1. Load the exams (`ExamNotFoundError` if any id doesn't exist).
+2. `build_examination_session(exams)` — every exam must share the same
+   `exam_date` and `time_slot` (`IncompatibleExamScheduleError`
+   otherwise). A session of exactly one exam is always valid, which is
+   how the existing single-exam MVP conceptually fits this model without
+   anything about today's behavior needing to change.
+3. Room compatibility (see below) — `ConflictingRoomAllocationError` if a
+   shared room is over-committed.
+4. `build_session_participants(...)` — a student registered in more than
+   one of the session's exams raises `DuplicateStudentInSessionError`,
+   never silently deduplicated or double-seated.
+5. Persist the session and its exam references.
+
+A session never copies course/student-count/room-capacity/schedule data
+onto itself — `SessionExamModel` only references exam ids, the same way
+`ExamRoom` references `Room` rather than copying its capacity. Reading a
+session back (`GET /examination-sessions/{id}`) re-resolves
+`participant_count`/`room_codes` fresh from current data every time.
+
+### Room sharing across a session's exams
+
+Two exams in the same session *can* reference the same physical room —
+this is what actually makes "multi-course seating" mean something (two
+courses seated into the same room together), rather than just "several
+single-course exams generated in one batch." The rule
+(`validate_no_conflicting_room_usage`) is: a room used by only one exam
+needs no check; a room shared by two or more exams is fine as long as the
+**sum** of each sharing exam's own `allocated_students` for that room
+does not exceed the room's real physical capacity. That sum is never
+invented — each number was already explicitly recorded against its own
+exam — and "does it physically fit" is an unambiguous, checkable fact.
+Only an over-committed shared room (sum > capacity) is rejected.
+
+### Building one seating input from several exams (`SeatingService.generate_session`)
+
+`SeatingService` gains `generate_session(session_id, strategy_name)`
+alongside the existing `generate(exam_id, strategy_name)` — `generate()`
+itself is completely unchanged (confirmed by its own file's zero-line
+diff for this milestone). `generate_session()`:
+
+1. Loads every session exam's `RoomAllocation`s and registered students.
+2. **Merges** any room shared by two exams into a single
+   `RoomAllocation` (summing `allocated_students`, keeping the room's own
+   `capacity` once, not once per exam) — `SeatingStrategy.generate()`
+   itself treats two entries with the same `room_id` as a data-integrity
+   error, correctly, for the single-exam path; a session's sharing case
+   needs this collapsed *before* the engine ever sees it.
+3. Builds one combined, deterministically-ordered student list —
+   ordered by **`(course_id, student_number)`**, not student_number
+   alone. Course-grouping the fill order (rather than interleaving by
+   number) is what lets the existing greedy constructive strategy
+   naturally seat each course as a contiguous block — exactly what
+   `SeparateCoursesConstraint` prefers — without needing any
+   backtracking to get there. A single-exam generation keeps using its
+   original, unchanged sort (one exam only ever has one course_id
+   anyway).
+4. Passes the resulting `student_id -> course_id` mapping to
+   `ConstraintSeatingStrategy` directly (a new, optional
+   `student_course_ids` constructor argument) instead of letting it
+   derive one course id for every student from a single `exam.course_id`
+   — which only makes sense for the single-exam case. The interface
+   still takes one `Exam`; a session passes a *representative* exam (its
+   first) purely so that slot's `exam.id` has something real for an
+   already-prevented duplicate-room-id error message — none of its other
+   fields are read once `student_course_ids` is supplied.
+5. Persists one `SeatingGeneration` (`session_id` set, `exam_id` `NULL`)
+   and its `SeatAssignment`s. Each assignment still records its own
+   `exam_id` (the specific exam *that student* belongs to, resolved
+   per-student during the merge above) — this is what lets a session
+   generation's assignments, reports, and API responses recover "which
+   course is this student in" without adding a new column anywhere.
+
+Capacity semantics are computed exactly like the single-exam case, from
+the same raw counts, now summed across the session: a student left
+unassigned because every remaining seat violated a hard constraint is
+reported only via `SeatingResult.warnings`, never by reinterpreting
+`scheduled_allocation_shortage` or `physical_capacity_shortage` — the
+worked example from **Constraint seating strategy** above holds
+identically for a session.
+
+### Persistence
+
+```
+ExaminationSessionModel   (id, exam_date, time_slot, created_at)
+SessionExamModel          (session_id -> ExaminationSessionModel,
+                            exam_id -> ExamModel)
+```
+
+Both are brand-new tables — no migration needed for existing databases,
+since `create_all()` creates any missing table.
+
+`SeatingGenerationModel.exam_id` becomes **nullable**, and gains a new
+nullable `session_id` (with a `CHECK` requiring exactly one of the two to
+be set — mirrored by `SeatingGeneration.__post_init__` at the domain
+level). SQLite has no `ALTER COLUMN`, so relaxing an already-shipped
+column's `NOT NULL` needs the standard SQLite rebuild dance:
+`_relax_seating_generation_exam_id_nullability()` renames the old table,
+creates the new schema, copies every existing row across unchanged (each
+keeps its real `exam_id`; the new `session_id` simply starts `NULL` for
+all of them), drops the old table, and restores its indexes. No existing
+generation or its assignments (referenced by `seating_generation_id`,
+never touched) is altered or invalidated — verified against a copy of
+the real dev database before this ran against the live one.
+
+`SeatAssignmentModel.exam_id` is **not** changed — it was already
+present, and stays `NOT NULL`: every assignment, session or not, still
+belongs to exactly one real exam.
+
+### API
+
+```
+POST /examination-sessions                              (create)
+GET  /examination-sessions                               (list)
+GET  /examination-sessions/{session_id}                  (detail)
+GET  /examination-sessions/{session_id}/seating/generations
+POST /examination-sessions/{session_id}/seating/generate
+```
+
+`POST /exams/{exam_id}/seating/generate` is completely unchanged —
+same request shape, same response shape, same behavior; it still
+generates seating for exactly one exam. `GET /seating/generations/{id}/assignments`
+(generation-scoped, not exam-scoped) needed no new endpoint to support
+sessions — it already worked by `generation_id` alone; it now also
+resolves each assignment's `course_id`/`course_code` (batch-resolved
+once per unique exam referenced, not once per assignment), which single-
+exam responses get too, for consistency. A `RoomTopologyMissingError`/
+`RoomTopologyMismatchError`/`UnknownRoomTopologyError` during session
+generation maps to `400`, the same way it already did for the single-exam
+endpoint.
+
+### Reports
+
+`ReportService` branches once, at load time, on whether a generation has
+an `exam_id` or a `session_id`, and produces the *same* header shape
+(`course_code`, `course_name`, `exam_date`, `time_slot`) and the *same*
+room-order list either way — the ReportLab renderers in `app/reports/`
+are completely untouched. For a session, multiple courses are joined into
+one display string (e.g. `"PHY101, CHEM101"`) rather than inventing a new
+report layout, and room order is the concatenation of each session exam's
+own canonical room order.
+
+### Frontend
+
+Two new pages: `/examination-sessions` (list existing sessions; create
+one by checking compatible exams — exams whose date/time differ from the
+first one checked are visibly disabled, not silently rejected only on
+submit) and `/examination-sessions/[sessionId]` (mirrors the exam detail
+page: stats, courses, rooms, a Constraint-only Generate Seating action,
+capacity diagnostics, generation history). `AssignmentsViewer` gained an
+optional course column and course filter, shown only when a generation's
+assignments actually span more than one course — a single-exam
+generation's view is visually unchanged. No seat-map, no drag-and-drop,
+no Optimization option anywhere.
 
 ## Persistence boundary
 
@@ -920,17 +1067,18 @@ The following are **not** implemented yet, anywhere in the codebase:
   (re-)importing a CSV row. A room with no topology configured is normal,
   valid state (`RoomTopologyMissingError` only when constraint seating
   actually needs one — see **Room topology** above).
-- **Mixed-course seating.** `ExaminationSession` and
-  `build_session_participants` (Milestone 8, `app/domain/examination_session.py`)
-  establish the domain concept and its validation (same date/time-slot,
-  no student in two of the session's exams), but nothing wires this into
-  generation: `POST /exams/{exam_id}/seating/generate` still seats exactly
-  one exam, there is no session-generation endpoint, `ExamRoom` allocation
-  is not shared or redistributed across exams, and `ExaminationSession`
-  itself is not persisted. `StudentSeatingContext.course_id` (Milestone 7,
-  moved to `app.domain` in Milestone 8) exists because
-  `SeparateCoursesConstraint` needs a course id per student, not because
-  mixed-course exams are actually seated together yet.
+- **Mixed-course seating is implemented as of Milestone 9** (see
+  **Examination sessions and multi-course seating**) — this bullet
+  previously said it was deferred; it no longer is.
+  `POST /examination-sessions/{session_id}/seating/generate` genuinely
+  seats several courses together, including sharing one physical room
+  across exams when the combined allocation fits. What remains genuinely
+  deferred around it specifically: a room can be shared by at most the
+  exams already validated not to over-commit it (no partial/percentage
+  room splits, no reshuffling an existing session's rooms after the
+  fact), and the constructive greedy algorithm inherits the same
+  no-backtracking limitation `ConstraintSeatingStrategy` already has for
+  a single exam.
 - **Constraint management / admin-configurable constraints** —
   `HardConstraint`/`SoftConstraint` (Milestone 6) are real, working types,
   and `ConstraintSeatingStrategy` (Milestone 7) actually evaluates them

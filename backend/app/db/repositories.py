@@ -13,17 +13,20 @@ from sqlalchemy.orm import Session
 
 from app.db.models import (
     CourseModel,
+    ExaminationSessionModel,
     ExamModel,
     ExamRoomModel,
     RegistrationModel,
     RoomModel,
     SeatAssignmentModel,
     SeatingGenerationModel,
+    SessionExamModel,
     StudentModel,
 )
 from app.domain import (
     Course,
     Exam,
+    ExaminationSession,
     ExamRoom,
     GenerationStatus,
     Registration,
@@ -35,6 +38,7 @@ from app.domain import (
 from app.repositories.course_repository import CourseRepository
 from app.repositories.exam_repository import ExamRepository
 from app.repositories.exam_room_repository import ExamRoomRepository
+from app.repositories.examination_session_repository import ExaminationSessionRepository
 from app.repositories.registration_repository import RegistrationRepository
 from app.repositories.room_repository import RoomRepository
 from app.repositories.seat_assignment_repository import SeatAssignmentRepository
@@ -78,10 +82,20 @@ def _exam_room_to_domain(model: ExamRoomModel) -> ExamRoom:
     )
 
 
+def _examination_session_to_domain(model: ExaminationSessionModel) -> ExaminationSession:
+    return ExaminationSession(
+        id=model.id,
+        exam_ids=[se.exam_id for se in sorted(model.session_exams, key=lambda se: se.id)],
+        exam_date=model.exam_date,
+        time_slot=model.time_slot,
+    )
+
+
 def _seating_generation_to_domain(model: SeatingGenerationModel) -> SeatingGeneration:
     return SeatingGeneration(
         id=model.id,
         exam_id=model.exam_id,
+        session_id=model.session_id,
         strategy_name=model.strategy_name,
         status=GenerationStatus(model.status),
         total_registered=model.total_registered,
@@ -331,6 +345,34 @@ class SqlAlchemyExamRoomRepository(ExamRoomRepository):
         return _exam_room_to_domain(model)
 
 
+class SqlAlchemyExaminationSessionRepository(ExaminationSessionRepository):
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def get(self, entity_id: int) -> ExaminationSession | None:
+        model = self._session.get(ExaminationSessionModel, entity_id)
+        return _examination_session_to_domain(model) if model else None
+
+    def list(self, limit: int | None = None, offset: int = 0) -> list[ExaminationSession]:
+        stmt = select(ExaminationSessionModel).order_by(ExaminationSessionModel.id).offset(offset)
+        if limit is not None:
+            stmt = stmt.limit(limit)
+        return [_examination_session_to_domain(m) for m in self._session.scalars(stmt)]
+
+    def count(self) -> int:
+        return self._session.scalar(select(func.count()).select_from(ExaminationSessionModel)) or 0
+
+    def add(self, entity: ExaminationSession) -> ExaminationSession:
+        model = ExaminationSessionModel(exam_date=entity.exam_date, time_slot=entity.time_slot)
+        self._session.add(model)
+        self._session.flush()  # need model.id before the join rows can reference it
+        for exam_id in entity.exam_ids:
+            self._session.add(SessionExamModel(session_id=model.id, exam_id=exam_id))
+        self._session.flush()
+        self._session.refresh(model)
+        return _examination_session_to_domain(model)
+
+
 class SqlAlchemySeatingGenerationRepository(SeatingGenerationRepository):
     def __init__(self, session: Session) -> None:
         self._session = session
@@ -341,6 +383,12 @@ class SqlAlchemySeatingGenerationRepository(SeatingGenerationRepository):
 
     def list_by_exam(self, exam_id: int) -> list[SeatingGeneration]:
         stmt = select(SeatingGenerationModel).where(SeatingGenerationModel.exam_id == exam_id).order_by(
+            SeatingGenerationModel.id
+        )
+        return [_seating_generation_to_domain(m) for m in self._session.scalars(stmt)]
+
+    def list_by_session(self, session_id: int) -> list[SeatingGeneration]:
+        stmt = select(SeatingGenerationModel).where(SeatingGenerationModel.session_id == session_id).order_by(
             SeatingGenerationModel.id
         )
         return [_seating_generation_to_domain(m) for m in self._session.scalars(stmt)]
@@ -357,6 +405,7 @@ class SqlAlchemySeatingGenerationRepository(SeatingGenerationRepository):
     def add(self, entity: SeatingGeneration) -> SeatingGeneration:
         model = SeatingGenerationModel(
             exam_id=entity.exam_id,
+            session_id=entity.session_id,
             strategy_name=entity.strategy_name,
             status=entity.status.value,
             total_registered=entity.total_registered,

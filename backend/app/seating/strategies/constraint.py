@@ -44,7 +44,24 @@ configured topology causes `generate()` to raise `RoomTopologyMissingError`
 for that exam, rather than guessing a layout for it — arbitrary room
 codes are fully supported as long as their topology has actually been
 configured.
+
+Multi-course sessions (Milestone 9): `generate()` still takes a single
+`exam` (the interface is unchanged), but `exam.course_id` only means
+anything when every given student truly belongs to that one exam/course
+— true for `SeatingService.generate()` (single-exam), not for
+`SeatingService.generate_session()` (a session's students span several
+courses). The optional `student_course_ids` constructor argument is the
+escape hatch: when given, it overrides *how the default
+`SeparateCoursesConstraint`'s course mapping is built* — the real,
+per-student course ids the session service already looked up are used
+directly, instead of deriving one course id for every student from
+`exam.course_id`. `SeatingService.generate_session()` passes a
+*representative* exam (the session's first) purely so this interface's
+`exam.id` still has something real to reference in an error message;
+none of its other fields are read when `student_course_ids` is given.
 """
+
+from collections.abc import Mapping
 
 from app.domain import Exam, GenerationStatus, Student, StudentSeatingContext
 from app.seating.constraints import ConstraintSet, SeparateCoursesConstraint, evaluate_constraints
@@ -75,19 +92,28 @@ class ConstraintSeatingStrategy(SeatingStrategy):
         self,
         topology_provider: RoomTopologyProvider | None = None,
         constraint_set: ConstraintSet | None = None,
+        student_course_ids: Mapping[int, int] | None = None,
     ) -> None:
         """`topology_provider` is threaded in uniformly by
         `get_strategy()` via `SeatingStrategy`'s own base constructor (see
         `app/seating/strategy.py`) — `SeatingService` supplies a real,
         repository-backed one in production. `constraint_set` defaults to
         `None`, which signals `generate()` to build a default set itself
-        (a single `SeparateCoursesConstraint` derived from the exam being
-        seated — see `_build_student_seating_contexts`). Passing an
+        (a single `SeparateCoursesConstraint`) — see `student_course_ids`
+        for where that default's course mapping comes from. Passing an
         explicit `ConstraintSet()` (rather than leaving it `None`) opts
-        out of that default and runs with genuinely zero constraints
-        instead."""
+        out of that default entirely and runs with genuinely zero
+        constraints instead; when that's done, `student_course_ids` is
+        ignored.
+
+        `student_course_ids`, if given, is used as the default
+        `SeparateCoursesConstraint`'s student_id -> course_id mapping
+        directly, instead of deriving one course id for every student
+        from `exam.course_id` (see this module's docstring — that
+        derivation only makes sense for a single-exam generation)."""
         super().__init__(topology_provider=topology_provider)
         self._constraint_set = constraint_set
+        self._student_course_ids = student_course_ids
 
     def generate(
         self,
@@ -142,8 +168,11 @@ class ConstraintSeatingStrategy(SeatingStrategy):
 
         constraint_set = self._constraint_set
         if constraint_set is None:
-            contexts = _build_student_seating_contexts(exam, students)
-            student_course_ids = {ctx.student_id: ctx.course_id for ctx in contexts}
+            if self._student_course_ids is not None:
+                student_course_ids = dict(self._student_course_ids)
+            else:
+                contexts = _build_student_seating_contexts(exam, students)
+                student_course_ids = {ctx.student_id: ctx.course_id for ctx in contexts}
             constraint_set = ConstraintSet(
                 soft_constraints=(
                     (SeparateCoursesConstraint(student_course_ids=student_course_ids, topologies=topologies),)

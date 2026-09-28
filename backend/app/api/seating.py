@@ -51,6 +51,7 @@ def _to_generation_out(generation: SeatingGeneration) -> SeatingGenerationOut:
     return SeatingGenerationOut(
         id=generation.id,
         exam_id=generation.exam_id,
+        session_id=generation.session_id,
         strategy_name=generation.strategy_name,
         status=generation.status.value,
         total_registered=generation.total_registered,
@@ -115,13 +116,33 @@ def list_assignments(
     assignment_repo = SqlAlchemySeatAssignmentRepository(session)
     room_repo = SqlAlchemyRoomRepository(session)
     student_repo = SqlAlchemyStudentRepository(session)
+    exam_repo = SqlAlchemyExamRepository(session)
+    course_repo = SqlAlchemyCourseRepository(session)
+
+    assignments = assignment_repo.list_by_generation(generation_id)
+
+    # Batch-resolved once per unique exam/course rather than per
+    # assignment — a session generation can span several exams/courses,
+    # but never more than a handful, so this stays O(exams), not
+    # O(assignments), even for a large multi-course session.
+    exam_by_id = {}
+    course_code_by_course_id = {}
+    for exam_id in {a.exam_id for a in assignments}:
+        exam = exam_repo.get(exam_id)
+        assert exam is not None
+        exam_by_id[exam_id] = exam
+        if exam.course_id not in course_code_by_course_id:
+            course = course_repo.get(exam.course_id)
+            assert course is not None
+            course_code_by_course_id[exam.course_id] = course.code
 
     items = []
-    for assignment in assignment_repo.list_by_generation(generation_id):
+    for assignment in assignments:
         room = room_repo.get(assignment.room_id)
         student = student_repo.get(assignment.student_id)
         assert room is not None
         assert student is not None
+        exam = exam_by_id[assignment.exam_id]
         items.append(
             SeatAssignmentOut(
                 id=assignment.id,
@@ -131,6 +152,9 @@ def list_assignments(
                 student_number=student.student_number,
                 student_name=student.full_name,
                 seat_number=assignment.seat_number,
+                exam_id=assignment.exam_id,
+                course_id=exam.course_id,
+                course_code=course_code_by_course_id[exam.course_id],
             )
         )
 

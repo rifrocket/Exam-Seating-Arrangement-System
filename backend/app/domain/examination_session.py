@@ -46,6 +46,19 @@ class DuplicateStudentInSessionError(ValueError):
     rejected outright rather than silently deduplicated or double-seated."""
 
 
+class ConflictingRoomAllocationError(ValueError):
+    """Raised when a room shared by more than one exam in the same
+    session is over-committed: the sum of every exam's own recorded
+    `allocated_students` for that room exceeds the room's real physical
+    `capacity`. This is the one case a session genuinely cannot resolve
+    deterministically — there is no honest way to seat more students in a
+    room than it physically holds. A room shared with allocations that
+    *do* fit is not an error: each exam's own recorded allocation is
+    summed (never invented), and course-grouped seating order (see
+    SeatingService.generate_session) naturally gives each exam's students
+    their own contiguous block of that shared room's seats."""
+
+
 @dataclass(frozen=True)
 class ExaminationSession:
     id: int | None
@@ -79,6 +92,48 @@ def build_examination_session(exams: list[Exam]) -> ExaminationSession:
         exam_date=first.exam_date,
         time_slot=first.time_slot,
     )
+
+
+@dataclass(frozen=True)
+class ExamRoomAllocation:
+    """One (exam, room) pair's scheduled allocation and that room's real
+    physical capacity — the minimum a session needs to validate room
+    sharing, without needing the full `Room`/`ExamRoom` domain objects."""
+
+    exam_id: int
+    room_id: int
+    allocated_students: int
+    room_capacity: int
+
+
+def validate_no_conflicting_room_usage(exam_room_allocations: list[ExamRoomAllocation]) -> None:
+    """A room used by only one exam in the session never needs checking.
+    A room shared by two or more exams is fine *as long as* the sum of
+    every sharing exam's own `allocated_students` for that room does not
+    exceed the room's `room_capacity` — that sum is never invented (each
+    number was already explicitly recorded against its own exam), and
+    "does it physically fit" is an unambiguous, checkable fact. Only an
+    over-committed room (sum > capacity) raises
+    `ConflictingRoomAllocationError`; a session cannot resolve that
+    deterministically."""
+    exam_ids_by_room: dict[int, set[int]] = {}
+    allocated_by_room: dict[int, int] = {}
+    capacity_by_room: dict[int, int] = {}
+    for entry in exam_room_allocations:
+        exam_ids_by_room.setdefault(entry.room_id, set()).add(entry.exam_id)
+        allocated_by_room[entry.room_id] = allocated_by_room.get(entry.room_id, 0) + entry.allocated_students
+        capacity_by_room[entry.room_id] = entry.room_capacity
+
+    for room_id, exam_ids in exam_ids_by_room.items():
+        if len(exam_ids) < 2:
+            continue  # not shared — nothing to reconcile
+        total_allocated = allocated_by_room[room_id]
+        capacity = capacity_by_room[room_id]
+        if total_allocated > capacity:
+            raise ConflictingRoomAllocationError(
+                f"Room {room_id} is shared by exams {sorted(exam_ids)} with a combined scheduled "
+                f"allocation of {total_allocated}, which exceeds its physical capacity of {capacity}."
+            )
 
 
 def build_session_participants(

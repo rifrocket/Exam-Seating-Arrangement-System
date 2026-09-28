@@ -6,12 +6,14 @@ from datetime import date
 
 import pytest
 
-from app.domain import Exam, Student
+from app.domain import Exam, ExamRoomAllocation, Student
 from app.domain.examination_session import (
+    ConflictingRoomAllocationError,
     DuplicateStudentInSessionError,
     IncompatibleExamScheduleError,
     build_examination_session,
     build_session_participants,
+    validate_no_conflicting_room_usage,
 )
 
 DATE = date(2026, 10, 2)
@@ -127,3 +129,49 @@ def test_participant_count_matches_total_registrations_when_no_duplicates() -> N
     )
 
     assert len(participants) == 3
+
+
+# --- room validation --------------------------------------------------------
+
+
+def _allocation(exam_id: int, room_id: int, allocated_students: int, room_capacity: int) -> ExamRoomAllocation:
+    return ExamRoomAllocation(
+        exam_id=exam_id, room_id=room_id, allocated_students=allocated_students, room_capacity=room_capacity
+    )
+
+
+def test_disjoint_room_usage_is_valid() -> None:
+    validate_no_conflicting_room_usage(
+        [
+            _allocation(1, 101, 10, 10),
+            _allocation(1, 102, 10, 10),
+            _allocation(2, 201, 10, 10),
+        ]
+    )  # does not raise
+
+
+def test_shared_room_within_combined_capacity_is_valid() -> None:
+    """The exact manual-acceptance scenario: two exams share one 20-seat
+    room, 10 seats allocated to each — 10 + 10 == 20, so it fits exactly."""
+    validate_no_conflicting_room_usage(
+        [
+            _allocation(1, 401, 10, 20),
+            _allocation(2, 401, 10, 20),
+        ]
+    )  # does not raise
+
+
+def test_shared_room_exceeding_combined_capacity_is_rejected() -> None:
+    with pytest.raises(ConflictingRoomAllocationError):
+        validate_no_conflicting_room_usage(
+            [
+                _allocation(1, 401, 15, 20),
+                _allocation(2, 401, 10, 20),  # 15 + 10 = 25 > 20
+            ]
+        )
+
+
+def test_room_used_by_only_one_exam_is_never_a_conflict_regardless_of_allocation() -> None:
+    """Even an over-allocated single-exam room (already a SequentialSeatingStrategy
+    warning case, not a session concern) is not this function's job to flag."""
+    validate_no_conflicting_room_usage([_allocation(1, 101, 999, 10)])  # does not raise

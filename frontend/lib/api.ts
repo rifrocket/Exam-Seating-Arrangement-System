@@ -116,7 +116,8 @@ export interface ExamDetailOut {
 
 export interface SeatingGenerationOut {
   id: number;
-  exam_id: number;
+  exam_id: number | null;
+  session_id: number | null;
   strategy_name: string;
   status: "pending" | "success" | "partial" | "failed";
   total_registered: number;
@@ -146,6 +147,9 @@ export interface SeatAssignmentOut {
   student_number: string;
   student_name: string;
   seat_number: number;
+  exam_id: number;
+  course_id: number;
+  course_code: string;
 }
 
 export interface SeatAssignmentListResult {
@@ -337,6 +341,78 @@ export async function fetchExamsWithGenerations(
         latest: generations.length > 0 ? generations[generations.length - 1] : null,
       };
     }),
+  );
+}
+
+export interface ExaminationSessionExamOut {
+  exam_id: number;
+  course_id: number;
+  course_code: string;
+  course_name: string;
+}
+
+export interface ExaminationSessionOut {
+  id: number;
+  exam_date: string;
+  time_slot: string;
+  exams: ExaminationSessionExamOut[];
+  participant_count: number;
+  room_codes: string[];
+}
+
+export async function createExaminationSession(
+  examIds: number[],
+): Promise<ExaminationSessionOut> {
+  const response = await apiFetch("/examination-sessions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ exam_ids: examIds }),
+  });
+  if (!response.ok) {
+    throw new Error(await readErrorDetail(response));
+  }
+  return response.json();
+}
+
+export function fetchExaminationSessions(
+  limit = 100,
+  offset = 0,
+): Promise<Page<ExaminationSessionOut>> {
+  return fetchPage<ExaminationSessionOut>("/examination-sessions", limit, offset);
+}
+
+export async function fetchExaminationSession(
+  sessionId: number,
+): Promise<ExaminationSessionOut> {
+  const response = await apiFetch(`/examination-sessions/${sessionId}`);
+  if (!response.ok) {
+    throw new Error(await readErrorDetail(response));
+  }
+  return response.json();
+}
+
+export async function generateSessionSeating(
+  sessionId: number,
+  strategy = "constraint",
+): Promise<SeatingGenerationResult> {
+  const response = await apiFetch(`/examination-sessions/${sessionId}/seating/generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ strategy }),
+  });
+  if (!response.ok) {
+    throw new Error(await readErrorDetail(response));
+  }
+  return response.json();
+}
+
+export function fetchSessionGenerations(
+  sessionId: number,
+): Promise<Page<SeatingGenerationOut>> {
+  return fetchPage<SeatingGenerationOut>(
+    `/examination-sessions/${sessionId}/seating/generations`,
+    50,
+    0,
   );
 }
 

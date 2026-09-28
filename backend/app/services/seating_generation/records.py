@@ -9,6 +9,12 @@ class ExamNotFoundError(Exception):
         self.exam_id = exam_id
 
 
+class SessionNotFoundError(Exception):
+    def __init__(self, session_id: int) -> None:
+        super().__init__(f"Examination session {session_id} not found.")
+        self.session_id = session_id
+
+
 @dataclass
 class SeatingGenerationOutcome:
     """What the service returns for one generation run.
