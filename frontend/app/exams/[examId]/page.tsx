@@ -19,14 +19,17 @@ import { EmptyState, ErrorState, LoadingState } from "@/components/ui/States";
 import { Table, Tbody, Td, Th, Thead, Tr } from "@/components/ui/Table";
 import { AssignmentsViewer } from "@/components/seating/AssignmentsViewer";
 import { CapacityDiagnostics } from "@/components/seating/CapacityDiagnostics";
+import { SeatMap } from "@/components/seating/SeatMap";
 import {
   ExamDetailOut,
+  RoomOut,
   SeatAssignmentOut,
   SeatingGenerationOut,
   SeatingGenerationResult,
   fetchAssignments,
   fetchExam,
   fetchGenerations,
+  fetchRooms,
   generateSeating,
   rangesReportUrl,
   seatingReportUrl,
@@ -38,6 +41,7 @@ export default function ExamDetailPage() {
 
   const [exam, setExam] = useState<ExamDetailOut | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [rooms, setRooms] = useState<RoomOut[]>([]);
 
   const [generations, setGenerations] = useState<SeatingGenerationOut[]>([]);
   const [strategy, setStrategy] = useState<"sequential" | "constraint">("sequential");
@@ -50,6 +54,16 @@ export default function ExamDetailPage() {
   const [viewedAssignments, setViewedAssignments] = useState<SeatAssignmentOut[]>([]);
   const [viewError, setViewError] = useState<string | null>(null);
   const viewedSectionRef = useRef<HTMLDivElement>(null);
+
+  async function loadRooms() {
+    try {
+      const page = await fetchRooms(200, 0);
+      setRooms(page.items);
+    } catch {
+      // Non-fatal: the seat map simply won't render a physical grid
+      // without room data — the assignment table above still works.
+    }
+  }
 
   async function loadExam() {
     try {
@@ -75,6 +89,7 @@ export default function ExamDetailPage() {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       loadExam();
       loadGenerations();
+      loadRooms();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [examId]);
@@ -310,7 +325,10 @@ export default function ExamDetailPage() {
                   )}
 
                   {assignments.length > 0 && (
-                    <AssignmentsViewer assignments={assignments} />
+                    <>
+                      <AssignmentsViewer assignments={assignments} />
+                      <SeatMap assignments={assignments} rooms={rooms} />
+                    </>
                   )}
                 </div>
               )}
@@ -402,11 +420,12 @@ export default function ExamDetailPage() {
                   )}
 
                   {viewedGenerationId !== null && (
-                    <div className="border-t border-border p-5">
+                    <div className="flex flex-col gap-5 border-t border-border p-5">
                       <AssignmentsViewer
                         title={`Assignments for generation #${viewedGenerationId}`}
                         assignments={viewedAssignments}
                       />
+                      <SeatMap assignments={viewedAssignments} rooms={rooms} />
                     </div>
                   )}
                 </div>

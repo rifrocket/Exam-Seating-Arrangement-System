@@ -1159,6 +1159,36 @@ note unconditionally. Neither changes what the strategy selector offers,
 the result stats shown, or how capacity diagnostics/warnings/assignments
 are displayed.
 
+## Physical seat map (Milestone 12, frontend visualization only)
+
+`components/seating/SeatMap.tsx` renders the room-by-room physical grid
+a generation's assignments actually landed in, next to the existing
+assignment table on both the exam and session detail pages. No backend
+change was needed: `GET /rooms` already exposes each room's own
+`rows`/`columns`/`blocked_seat_numbers`, and `GET
+/seating/generations/{id}/assignments` already gives each assignment's
+`room_id`/`seat_number` — the component maps a seat number to its
+row/column itself (`row = floor((seat_number-1)/columns)`, `column =
+(seat_number-1) % columns`), the exact formula
+`RectangularRoomTopology.position_for_seat` uses on the backend, rather
+than inferring position from assignment list order.
+
+Every physical seat in `1..rows*columns` gets a cell, in one of three
+states: **occupied** (has an assignment — shows seat number, course
+code, and student number, colored per course), **empty** (usable, no
+assignment yet), or **blocked** (in the room's `blocked_seat_numbers` —
+shown distinctly from empty, never as if it were available). Course
+colors cycle through a fixed palette keyed by each course's alphabetical
+position, shared across every room in one generation; the course code is
+always shown as text too, so information is never carried by color
+alone. A wide room scrolls horizontally inside its own container
+(fixed-width cells, `overflow-x-auto`) rather than shrinking seats or
+breaking the page layout.
+
+This is visualization-only: nothing is clickable, editable, or
+persisted, and no seating decision is made or changed here — it reads
+the same finished assignments the table and PDF reports already read.
+
 ## Persistence boundary
 
 - SQLite via SQLAlchemy 2.0 declarative models (`app/db/models.py`).

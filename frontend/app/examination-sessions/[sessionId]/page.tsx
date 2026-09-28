@@ -11,13 +11,16 @@ import { EmptyState, ErrorState, LoadingState } from "@/components/ui/States";
 import { Table, Tbody, Td, Th, Thead, Tr } from "@/components/ui/Table";
 import { AssignmentsViewer } from "@/components/seating/AssignmentsViewer";
 import { CapacityDiagnostics } from "@/components/seating/CapacityDiagnostics";
+import { SeatMap } from "@/components/seating/SeatMap";
 import {
   ExaminationSessionOut,
+  RoomOut,
   SeatAssignmentOut,
   SeatingGenerationOut,
   SeatingGenerationResult,
   fetchAssignments,
   fetchExaminationSession,
+  fetchRooms,
   fetchSessionGenerations,
   generateSessionSeating,
   rangesReportUrl,
@@ -30,6 +33,7 @@ export default function ExaminationSessionDetailPage() {
 
   const [session, setSession] = useState<ExaminationSessionOut | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [rooms, setRooms] = useState<RoomOut[]>([]);
 
   const [generations, setGenerations] = useState<SeatingGenerationOut[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -41,6 +45,16 @@ export default function ExaminationSessionDetailPage() {
   const [viewedAssignments, setViewedAssignments] = useState<SeatAssignmentOut[]>([]);
   const [viewError, setViewError] = useState<string | null>(null);
   const viewedSectionRef = useRef<HTMLDivElement>(null);
+
+  async function loadRooms() {
+    try {
+      const page = await fetchRooms(200, 0);
+      setRooms(page.items);
+    } catch {
+      // Non-fatal: the seat map simply won't render a physical grid
+      // without room data — the assignment table above still works.
+    }
+  }
 
   async function loadSession() {
     try {
@@ -66,6 +80,7 @@ export default function ExaminationSessionDetailPage() {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       loadSession();
       loadGenerations();
+      loadRooms();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
@@ -261,7 +276,12 @@ export default function ExaminationSessionDetailPage() {
                     </div>
                   )}
 
-                  {assignments.length > 0 && <AssignmentsViewer assignments={assignments} />}
+                  {assignments.length > 0 && (
+                    <>
+                      <AssignmentsViewer assignments={assignments} />
+                      <SeatMap assignments={assignments} rooms={rooms} />
+                    </>
+                  )}
                 </div>
               )}
             </div>
@@ -347,11 +367,12 @@ export default function ExaminationSessionDetailPage() {
                   )}
 
                   {viewedGenerationId !== null && (
-                    <div className="border-t border-border p-5">
+                    <div className="flex flex-col gap-5 border-t border-border p-5">
                       <AssignmentsViewer
                         title={`Assignments for generation #${viewedGenerationId}`}
                         assignments={viewedAssignments}
                       />
+                      <SeatMap assignments={viewedAssignments} rooms={rooms} />
                     </div>
                   )}
                 </div>
