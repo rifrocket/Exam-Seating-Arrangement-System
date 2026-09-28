@@ -89,6 +89,14 @@ class RoomOut(BaseModel):
     capacity: int
     rows: int | None
     columns: int | None
+    blocked_seat_numbers: list[int]
+    # Both null when no topology is configured. When topology exists,
+    # physical_capacity == rows * columns and usable_capacity ==
+    # physical_capacity - len(blocked_seat_numbers) — Room itself is the
+    # only place blocking is remembered, so these are always in sync with
+    # blocked_seat_numbers above, never a separately-configurable fact.
+    physical_capacity: int | None
+    usable_capacity: int | None
 
 
 class RoomListResponse(BaseModel):
@@ -181,12 +189,14 @@ class SeatingGenerationOut(BaseModel):
 class SeatingGenerationResponse(SeatingGenerationOut):
     scheduled_student_count: int
     total_physical_capacity: int
+    total_usable_capacity: int
     available_capacity: int
     unassigned_student_ids: list[int]
     # `capacity_shortage` (inherited above) only answers "did anyone go
-    # unassigned?" — these two answer "why," and are not mutually exclusive.
+    # unassigned?" — these three answer "why," and are not mutually exclusive.
     scheduled_allocation_shortage: bool
     physical_capacity_shortage: bool
+    usable_capacity_shortage: bool
 
 
 class SeatingGenerationListResponse(BaseModel):

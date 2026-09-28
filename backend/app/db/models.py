@@ -90,6 +90,14 @@ class RoomModel(Base):
     # database file picks these columns up without Alembic.
     rows: Mapped[int | None] = mapped_column(Integer, nullable=True)
     columns: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # NOT NULL with a default of an empty list, unlike rows/columns above —
+    # "no blocked seats" (the common case) is representable without NULL,
+    # so there's no reason to allow one. Added to an already-shipped table
+    # in Milestone 10 — see app.db.init_db._ensure_room_blocked_seats_column
+    # for how an existing database file picks this column up without
+    # Alembic (a plain ADD COLUMN with a DEFAULT, unlike rows/columns'
+    # NULL default — SQLite supports both in one statement).
+    blocked_seat_numbers: Mapped[list[int]] = mapped_column(JSON, nullable=False, default=list)
 
     exam_rooms: Mapped[list["ExamRoomModel"]] = relationship(back_populates="room")
 

@@ -21,6 +21,15 @@ backfilled from a later import row (nothing is being overwritten, since
 there was nothing there before); a room that already *has* topology and
 the row disagrees is reported as a conflict, the same policy already
 applied to capacity.
+
+Milestone 10 adds one more optional column, `BlockedSeats` — a
+semicolon-separated list of seat numbers *within that row's own topology*
+(e.g. `7;17`), only meaningful on a row that also specifies rows/columns
+(blocked seat numbers are meaningless without a layout to number seats
+against). Same policy as rows/columns: an existing room with no blocked
+seats configured gets them backfilled; one that already has different
+blocked seats reports a `room_blocked_seats` conflict rather than
+overwriting.
 """
 
 import csv
@@ -33,6 +42,7 @@ from app.repositories.room_repository import RoomRepository
 
 REQUIRED_COLUMNS = {"room", "capacity"}
 OPTIONAL_TOPOLOGY_COLUMNS = {"rows", "columns"}
+OPTIONAL_BLOCKED_SEATS_COLUMN = "blockedseats"
 
 
 @dataclass(frozen=True)
@@ -75,6 +85,7 @@ class _ParsedRoomRow:
     capacity: int
     rows: int | None
     columns: int | None
+    blocked_seat_numbers: tuple[int, ...]
 
 
 def _parse_rooms_csv(
@@ -95,11 +106,13 @@ def _parse_rooms_csv(
     # optional, so a stray single column never turns into a confusing
     # "missing column" error for something optional in the first place.
     has_topology_columns = OPTIONAL_TOPOLOGY_COLUMNS <= field_lookup.keys()
+    has_blocked_seats_column = OPTIONAL_BLOCKED_SEATS_COLUMN in field_lookup
 
     validation_errors: list[RoomValidationError] = []
     conflicts: list[RoomConflict] = []
     rows: list[_ParsedRoomRow] = []
-    seen: dict[str, tuple[int, int | None, int | None]] = {}  # code -> (capacity, rows, columns)
+    # code -> (capacity, rows, columns, blocked_seat_numbers)
+    seen: dict[str, tuple[int, int | None, int | None, tuple[int, ...]]] = {}
     duplicate_rows = 0
     rows_read = 0
 
@@ -156,21 +169,68 @@ def _parse_rooms_csv(
                             RoomValidationError(line_number, "rows", f"Invalid rows/columns: '{rows_raw}'/'{columns_raw}'.")
                         )
 
+        blocked_seat_numbers: tuple[int, ...] = ()
+        if has_blocked_seats_column:
+            blocked_raw = (row.get(field_lookup[OPTIONAL_BLOCKED_SEATS_COLUMN]) or "").strip()
+            if blocked_raw:
+                if topology_rows is None or topology_columns is None:
+                    row_errors.append(
+                        RoomValidationError(
+                            line_number,
+                            "blockedseats",
+                            "Blocked seats require this row to also specify rows and columns.",
+                        )
+                    )
+                else:
+                    parsed_blocked: set[int] = set()
+                    seat_capacity = topology_rows * topology_columns
+                    for token in blocked_raw.split(";"):
+                        token = token.strip()
+                        if not token:
+                            continue
+                        try:
+                            seat_number = int(token)
+                        except ValueError:
+                            row_errors.append(
+                                RoomValidationError(
+                                    line_number, "blockedseats", f"Invalid blocked seat number: '{token}'."
+                                )
+                            )
+                            break
+                        if not (1 <= seat_number <= seat_capacity):
+                            row_errors.append(
+                                RoomValidationError(
+                                    line_number,
+                                    "blockedseats",
+                                    f"Blocked seat number {seat_number} is out of range (1..{seat_capacity}).",
+                                )
+                            )
+                            break
+                        parsed_blocked.add(seat_number)
+                    else:
+                        blocked_seat_numbers = tuple(sorted(parsed_blocked))
+
         if row_errors:
             validation_errors.extend(row_errors)
             continue
         assert capacity is not None
 
         if code in seen:
-            existing_capacity, existing_rows, existing_columns = seen[code]
-            if existing_capacity != capacity or (existing_rows, existing_columns) != (topology_rows, topology_columns):
+            existing_capacity, existing_rows, existing_columns, existing_blocked = seen[code]
+            if (
+                existing_capacity != capacity
+                or (existing_rows, existing_columns) != (topology_rows, topology_columns)
+                or existing_blocked != blocked_seat_numbers
+            ):
                 conflicts.append(RoomConflict(code, line_number, str(existing_capacity), str(capacity)))
             else:
                 duplicate_rows += 1
             continue
 
-        seen[code] = (capacity, topology_rows, topology_columns)
-        rows.append(_ParsedRoomRow(line_number, code, capacity, topology_rows, topology_columns))
+        seen[code] = (capacity, topology_rows, topology_columns, blocked_seat_numbers)
+        rows.append(
+            _ParsedRoomRow(line_number, code, capacity, topology_rows, topology_columns, blocked_seat_numbers)
+        )
 
     return rows, validation_errors, conflicts, duplicate_rows, rows_read
 
@@ -209,6 +269,11 @@ class RoomImportService:
                             row.code, row.line_number, str(existing.capacity), str(row.capacity), kind="room_capacity"
                         )
                     )
+                # Tracks whether, after this row, the room's *effective*
+                # topology is known to equal row.rows/row.columns — only
+                # then is it safe to backfill blocked seats against that
+                # same layout below.
+                topology_confirmed = False
                 if row.rows is not None and row.columns is not None:
                     if existing.has_topology:
                         if (existing.rows, existing.columns) != (row.rows, row.columns):
@@ -221,6 +286,8 @@ class RoomImportService:
                                     kind="room_topology",
                                 )
                             )
+                        else:
+                            topology_confirmed = True
                     elif capacity_conflict:
                         # The row's rows x columns was only validated
                         # against the row's own (disagreeing) capacity —
@@ -241,11 +308,48 @@ class RoomImportService:
                         # had no topology configured until now.
                         assert existing.id is not None
                         self._rooms.set_topology(existing.id, row.rows, row.columns)
+                        topology_confirmed = True
+                elif existing.has_topology:
+                    topology_confirmed = True  # row didn't touch topology; the existing one still applies
+
+                if row.blocked_seat_numbers:
+                    if existing.blocked_seat_numbers:
+                        if existing.blocked_seat_numbers != row.blocked_seat_numbers:
+                            result.conflicts.append(
+                                RoomConflict(
+                                    f"{row.code}:blocked_seats",
+                                    row.line_number,
+                                    ",".join(str(n) for n in existing.blocked_seat_numbers),
+                                    ",".join(str(n) for n in row.blocked_seat_numbers),
+                                    kind="room_blocked_seats",
+                                )
+                            )
+                    elif topology_confirmed:
+                        # Nothing is being overwritten — this room simply
+                        # had no blocked seats configured until now.
+                        assert existing.id is not None
+                        self._rooms.set_blocked_seats(existing.id, row.blocked_seat_numbers)
+                    else:
+                        result.validation_errors.append(
+                            RoomValidationError(
+                                row.line_number,
+                                "blockedseats",
+                                f"Room '{row.code}' does not have a confirmed matching topology on this row — "
+                                "blocked seats were not applied.",
+                            )
+                        )
                 result.rooms_existing += 1
             else:
                 try:
                     self._rooms.add(
-                        Room(id=None, code=row.code, capacity=row.capacity, rows=row.rows, columns=row.columns)
+                        Room(
+                            id=None,
+                            code=row.code,
+                            capacity=row.capacity,
+                            rows=row.rows,
+                            columns=row.columns,
+                            blocked_seat_numbers=row.blocked_seat_numbers,
+                        )
                     )
                 except InvalidRoomTopologyError as exc:
                     result.validation_errors.append(RoomValidationError(row.line_number, "rows", str(exc)))

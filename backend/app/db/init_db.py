@@ -41,6 +41,14 @@ real `exam_id`; `session_id` is simply new and starts NULL for all of
 them), drop the old table, and rename. No existing generation or its
 assignments (which reference it by `seating_generation_id`, never
 altered) are touched or invalidated.
+
+Milestone 10 adds `rooms.blocked_seat_numbers` — nullable/additive like
+Milestone 8's `rows`/`columns`, but *without* allowing NULL: "no blocked
+seats" (every pre-Milestone-10 room) is representable as an empty JSON
+list, so there's no reason to allow NULL too. SQLite's `ADD COLUMN`
+supports a `NOT NULL ... DEFAULT` in one statement as long as the default
+is non-NULL, so `_ensure_room_blocked_seats_column()` needs only a single
+`ALTER TABLE`, not the `seating_generations` rebuild dance above.
 """
 
 from sqlalchemy import inspect, text
@@ -96,6 +104,24 @@ def _ensure_room_topology_columns(engine: Engine) -> None:
             connection.execute(text("ALTER TABLE rooms ADD COLUMN rows INTEGER"))
         if "columns" in missing:
             connection.execute(text('ALTER TABLE rooms ADD COLUMN "columns" INTEGER'))
+
+
+def _ensure_room_blocked_seats_column(engine: Engine) -> None:
+    """Adds `blocked_seat_numbers` to an existing `rooms` table if it's
+    missing, defaulting every existing row to `[]` ("no blocked seats") —
+    the only correct value for a room that predates this concept."""
+    inspector = inspect(engine)
+    if "rooms" not in inspector.get_table_names():
+        return  # Fresh database — create_all() will create the current schema directly.
+
+    existing_columns = {col["name"] for col in inspector.get_columns("rooms")}
+    if "blocked_seat_numbers" in existing_columns:
+        return
+
+    with engine.begin() as connection:
+        connection.execute(
+            text("ALTER TABLE rooms ADD COLUMN blocked_seat_numbers JSON NOT NULL DEFAULT '[]'")
+        )
 
 
 def _relax_seating_generation_exam_id_nullability(engine: Engine) -> None:
@@ -168,6 +194,7 @@ def init_db(engine: Engine | None = None) -> Engine:
     engine = engine or get_engine()
     check_schema_compatibility(engine)
     _ensure_room_topology_columns(engine)
+    _ensure_room_blocked_seats_column(engine)
     Base.metadata.create_all(bind=engine)
     _relax_seating_generation_exam_id_nullability(engine)
     return engine

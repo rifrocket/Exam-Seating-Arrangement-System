@@ -25,15 +25,18 @@ class SeatingGenerationOutcome:
     records only what it was asked to (exam, strategy, status, total
     registered/assigned/unassigned, capacity shortage); adding fields
     nothing else reads back later would be speculative. If a future
-    milestone needs to inspect `scheduled_allocation_shortage` or
-    `physical_capacity_shortage` for a *past* generation (not just the one
-    just run), that's the point to add persisted columns — not before.
+    milestone needs to inspect `scheduled_allocation_shortage`,
+    `physical_capacity_shortage`, or `usable_capacity_shortage` for a
+    *past* generation (not just the one just run), that's the point to
+    add persisted columns — not before.
     """
 
     generation: SeatingGeneration
     scheduled_student_count: int
     total_physical_capacity: int
+    total_usable_capacity: int
     available_capacity: int
     unassigned_student_ids: list[int]
     scheduled_allocation_shortage: bool
     physical_capacity_shortage: bool
+    usable_capacity_shortage: bool

@@ -14,3 +14,9 @@ class RoomRepository(Repository[Room]):
         update() — this project prefers narrow, explicitly-named
         operations over one that could change any field."""
         ...
+
+    @abstractmethod
+    def set_blocked_seats(self, room_id: int, blocked_seat_numbers: tuple[int, ...]) -> Room:
+        """Backfills blocked_seat_numbers on an existing room. Not a
+        generic update(), for the same reason as set_topology()."""
+        ...

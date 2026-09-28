@@ -105,3 +105,124 @@ def test_invalid_layout_dimensions_raise() -> None:
         RectangularRoomTopology(room_id=1, rows=0, columns=5)
     with pytest.raises(ValueError):
         RectangularRoomTopology(room_id=1, rows=2, columns=0)
+
+
+# --- small/edge-case layouts (Milestone 10) --------------------------------
+
+
+def test_1x1_layout() -> None:
+    layout = RectangularRoomTopology(room_id=1, rows=1, columns=1)
+    assert layout.physical_capacity == 1
+    assert layout.usable_capacity == 1
+    position = layout.position_for_seat(1)
+    assert (position.row, position.column) == (0, 0)
+    assert layout.is_adjacent(position, position) is False
+
+
+def test_2x2_layout() -> None:
+    layout = RectangularRoomTopology(room_id=1, rows=2, columns=2)
+    assert layout.physical_capacity == 4
+    seat_1, seat_2, seat_3, seat_4 = (layout.position_for_seat(n) for n in (1, 2, 3, 4))
+    assert (seat_1.row, seat_1.column) == (0, 0)
+    assert (seat_2.row, seat_2.column) == (0, 1)
+    assert (seat_3.row, seat_3.column) == (1, 0)
+    assert (seat_4.row, seat_4.column) == (1, 1)
+    # In a 2x2 grid every seat is adjacent (including diagonally) to every other.
+    for a in (seat_1, seat_2, seat_3, seat_4):
+        for b in (seat_1, seat_2, seat_3, seat_4):
+            if a != b:
+                assert layout.is_adjacent(a, b) is True
+
+
+def test_all_seats_usable_by_default() -> None:
+    layout = _layout()
+    assert layout.usable_capacity == layout.physical_capacity == 10
+    assert [p.seat_number for p in layout.usable_positions()] == list(range(1, 11))
+    assert all(p.available for p in layout.all_positions())
+
+
+def test_all_positions_returns_every_physical_seat_in_seat_number_order() -> None:
+    layout = _layout()
+    assert [p.seat_number for p in layout.all_positions()] == list(range(1, 11))
+
+
+# --- blocked seats (Milestone 10) ------------------------------------------
+
+
+def test_one_blocked_seat() -> None:
+    layout = RectangularRoomTopology(room_id=1, rows=4, columns=5, blocked_seat_numbers={7})
+    assert layout.physical_capacity == 20
+    assert layout.usable_capacity == 19
+    assert layout.position_for_seat(7).available is False
+    assert 7 not in [p.seat_number for p in layout.usable_positions()]
+
+
+def test_multiple_blocked_seats_deterministic_usable_order() -> None:
+    # The exact example from the Phase 10 spec.
+    layout = RectangularRoomTopology(room_id=1, rows=4, columns=5, blocked_seat_numbers={7, 17})
+    assert layout.physical_capacity == 20
+    assert layout.usable_capacity == 18
+    assert [p.seat_number for p in layout.usable_positions()] == [
+        1, 2, 3, 4, 5,
+        6, 8, 9, 10,
+        11, 12, 13, 14, 15,
+        16, 18, 19, 20,
+    ]
+
+
+def test_duplicate_blocked_seat_numbers_are_harmless() -> None:
+    layout = RectangularRoomTopology(room_id=1, rows=4, columns=5, blocked_seat_numbers=[7, 7, 17, 17, 17])
+    assert layout.usable_capacity == 18
+
+
+def test_invalid_blocked_seat_number_is_rejected() -> None:
+    with pytest.raises(ValueError, match="out of range"):
+        RectangularRoomTopology(room_id=1, rows=4, columns=5, blocked_seat_numbers={21})
+
+
+def test_blocked_seat_number_zero_is_rejected() -> None:
+    with pytest.raises(ValueError, match="out of range"):
+        RectangularRoomTopology(room_id=1, rows=4, columns=5, blocked_seat_numbers={0})
+
+
+def test_blocked_seat_number_negative_is_rejected() -> None:
+    with pytest.raises(ValueError, match="out of range"):
+        RectangularRoomTopology(room_id=1, rows=4, columns=5, blocked_seat_numbers={-1})
+
+
+def test_all_seats_blocked_leaves_zero_usable_capacity() -> None:
+    layout = RectangularRoomTopology(room_id=1, rows=2, columns=2, blocked_seat_numbers={1, 2, 3, 4})
+    assert layout.physical_capacity == 4
+    assert layout.usable_capacity == 0
+    assert layout.usable_positions() == []
+    assert len(layout.all_positions()) == 4  # still physically present
+
+
+def test_blocked_seats_never_appear_in_usable_positions() -> None:
+    layout = RectangularRoomTopology(room_id=1, rows=4, columns=5, blocked_seat_numbers={7, 17})
+    usable_numbers = {p.seat_number for p in layout.usable_positions()}
+    assert 7 not in usable_numbers
+    assert 17 not in usable_numbers
+
+
+# --- physical existence vs. usability (Milestone 10, spec section 12) ------
+
+
+def test_blocked_seat_still_has_real_row_column_and_participates_in_queries() -> None:
+    """01 02 -- 04 / 05 06 07 08 — seat 3 is blocked but seats 2 and 4
+    remain real physical positions, and adjacency between OTHER seats is
+    computed exactly as if seat 3 were usable — blocking a seat does not
+    invent special adjacency semantics."""
+    layout = RectangularRoomTopology(room_id=1, rows=2, columns=4, blocked_seat_numbers={3})
+    seat_2 = layout.position_for_seat(2)
+    seat_3 = layout.position_for_seat(3)
+    seat_4 = layout.position_for_seat(4)
+
+    assert seat_3.available is False
+    assert (seat_3.row, seat_3.column) == (0, 2)  # still a real position
+    # Seat 2 and seat 4 are each still adjacent to (blocked) seat 3 —
+    # physical adjacency is unaffected by usability.
+    assert layout.is_adjacent(seat_2, seat_3) is True
+    assert layout.is_adjacent(seat_3, seat_4) is True
+    # And seat 2 / seat 4 are not adjacent to each other (two apart).
+    assert layout.is_adjacent(seat_2, seat_4) is False

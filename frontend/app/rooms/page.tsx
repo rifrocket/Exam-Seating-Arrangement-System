@@ -106,7 +106,7 @@ export default function RoomsPage() {
             <ErrorState message={listError} onRetry={load} />
           </div>
         ) : isLoading ? (
-          <TableSkeleton rows={6} columns={5} />
+          <TableSkeleton rows={6} columns={8} />
         ) : rooms.length === 0 ? (
           <div className="p-6">
             <EmptyState
@@ -126,6 +126,9 @@ export default function RoomsPage() {
                 <Th>Capacity</Th>
                 <Th>Rows</Th>
                 <Th>Columns</Th>
+                <Th>Physical Capacity</Th>
+                <Th>Usable Seats</Th>
+                <Th>Blocked Seats</Th>
                 <Th>Topology</Th>
               </Tr>
             </Thead>
@@ -136,6 +139,13 @@ export default function RoomsPage() {
                   <Td>{room.capacity}</Td>
                   <Td>{room.rows ?? "—"}</Td>
                   <Td>{room.columns ?? "—"}</Td>
+                  <Td>{room.physical_capacity ?? "—"}</Td>
+                  <Td>{room.usable_capacity ?? "—"}</Td>
+                  <Td>
+                    <span title={room.blocked_seat_numbers.join(", ") || undefined}>
+                      {room.blocked_seat_numbers.length > 0 ? room.blocked_seat_numbers.length : "—"}
+                    </span>
+                  </Td>
                   <Td>
                     {room.rows !== null && room.columns !== null ? (
                       <Badge tone="success">Configured</Badge>

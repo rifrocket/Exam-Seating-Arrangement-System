@@ -341,7 +341,7 @@ new class in `app/seating/strategies/` implementing `generate()`, and a
 registry entry — no change to `api/`, `db/`, `repositories/`, `frontend/`,
 or the `Exam`/`ExamRoom` schema.
 
-### Two distinct shortage diagnoses (not one ambiguous flag)
+### Three distinct shortage diagnoses (not one ambiguous flag)
 
 `SeatingGeneration.capacity_shortage` (persisted, unchanged since
 Milestone 4) means exactly one thing: `unassigned_student_count > 0` —
@@ -352,7 +352,7 @@ narrower claim, and collapsing the two would recreate the same kind of
 ambiguity the legacy `min(expected, allocated)` truncation caused.
 
 `SeatingResult` (and the `POST /exams/{id}/seating/generate` response)
-carries two further, independent booleans that answer *why*:
+carries three further, independent booleans that answer *why*:
 
 - `scheduled_allocation_shortage` = `registered_student_count >
   scheduled_student_count`. The schedule's own plan didn't allocate
@@ -364,10 +364,20 @@ carries two further, independent booleans that answer *why*:
   completely independent of what was scheduled). This can be true even
   when the schedule "on paper" allocated more seats than there are
   students — the rooms themselves don't have that many physical seats.
+- `usable_capacity_shortage` (Milestone 10) = `registered_student_count >
+  total_usable_capacity`, where `total_usable_capacity` is the sum of
+  each room's *usable* seats (physical seats minus any blocked ones — see
+  **Physical seat layout and availability** below). Because usable seats
+  are a subset of physical seats, `physical_capacity_shortage` implies
+  `usable_capacity_shortage`, but not the other way around: a room can
+  have enough physical seats yet too few usable ones once blocking is
+  taken into account. This is expected, not a bug — the two flags answer
+  different questions ("enough seats exist at all" vs. "enough seats are
+  actually assignable").
 
-Neither implies the other; a generation can have either, both, or
-neither true. These two flags are **not** persisted on
-`SeatingGeneration` — they're recomputed from a live run's
+None of the three imply each other beyond that one direction; a
+generation can have any combination true. These flags are **not**
+persisted on `SeatingGeneration` — they're recomputed from a live run's
 `RoomAllocation` inputs and returned only in that run's API response
 (see `SeatingGenerationOutcome` in
 `app/services/seating_generation/records.py`). Persisting them is
@@ -881,6 +891,131 @@ assignments actually span more than one course — a single-exam
 generation's view is visually unchanged. No seat-map, no drag-and-drop,
 no Optimization option anywhere.
 
+## Physical seat layout and availability (Milestone 10)
+
+Milestone 8 gave rooms a *shape* (`rows`/`columns`) but every seat within
+that shape was implicitly usable. Milestone 10 adds the ability to mark
+individual seats within an otherwise-configured topology as **blocked**
+(broken chair, seat too close to a wall socket, reserved for invigilator
+equipment, etc.) — a seat that physically exists but must never receive a
+student.
+
+```
+SeatPosition
+    room_id, seat_number, row, column
+    available: bool = True   # False only for a blocked seat
+```
+
+A blocked seat is not removed from the topology or renumbered — it is
+still a real `SeatPosition` that participates in adjacency/distance
+queries exactly like any other seat (blocking a seat next to seat 12
+still makes seat 12 "have a blocked neighbor," which is a fact a future
+anti-cheating constraint might one day care about). It is excluded only
+from the *usable* candidate list that strategies draw seat assignments
+from:
+
+```python
+class SeatTopology(ABC):
+    def all_positions(self) -> list[SeatPosition]: ...     # every physical seat, row-major
+    def usable_positions(self) -> list[SeatPosition]: ...  # all_positions() minus blocked ones, same order
+    physical_capacity: int   # len(all_positions())
+    usable_capacity: int     # len(usable_positions())
+```
+
+`RectangularRoomTopology` takes an optional `blocked_seat_numbers`
+(any iterable of ints, deduplicated and range-validated against
+`1..physical_capacity`) and filters exactly those seat numbers out of
+`usable_positions()`, preserving row-major order — blocking never
+reshuffles or renumbers the remaining seats.
+
+### Where blocking is configured (and the persistence decision)
+
+The milestone's own worked example (the Rooms page showing a room's
+*Usable Seats* differing from its *Physical Capacity* on the persistent
+room list itself) can only be true if blocking is remembered per-room,
+not re-supplied per seating run. Rather than guess, this was confirmed
+with the project owner directly: **blocking is persisted on `Room`**,
+the same way `warnings` already is — a single additive, nullable-safe
+JSON column, `Room.blocked_seat_numbers`, no separate seats table:
+
+```
+Room
+    code, capacity, rows, columns
+    blocked_seat_numbers: list[int] = []   # new, JSON column
+```
+
+Deliberately **not** built, per the milestone's own scope boundary:
+- A `Seat` database table or any seat-level CRUD endpoint.
+- A graphical seat designer (drag-and-drop, canvas, etc.) — blocking is
+  configured the same way topology itself is: through the room-import
+  CSV.
+- Any optimization (OR-Tools/CP-SAT/ILP/backtracking/ML) to *choose*
+  which seats to block — blocking is an administrative fact supplied by
+  the operator, never inferred or optimized.
+
+`app.db.init_db._ensure_room_blocked_seats_column()` adds the column via
+a single `ALTER TABLE rooms ADD COLUMN blocked_seat_numbers JSON NOT NULL
+DEFAULT '[]'` — SQLite supports a `NOT NULL DEFAULT` addition to an
+existing table directly, unlike the exam_id-nullability change Milestone
+9 needed, so no table-rebuild dance is required here. Every pre-Milestone-10
+room simply gets `blocked_seat_numbers = []` ("nothing blocked"), which is
+byte-for-byte the same seating behavior as before this milestone.
+
+### Room import
+
+A third optional CSV column, `blockedseats`, joins `rows`/`columns`:
+
+```
+room,capacity,rows,columns,blockedseats
+500,20,4,5,7;17
+```
+
+Seat numbers are semicolon-separated within the cell (the CSV's own
+delimiter is already the comma). Blocked seats require a topology on the
+*same* row — a room with no `rows`/`columns` configured has no seat
+numbering to block seats within, so `blockedseats` without topology is a
+validation error for that row, matching how a rows/columns mismatch is
+already rejected outright rather than partially applied. The same
+backfill/conflict policy already established for topology applies here
+too: an existing room with no blocked seats gets them backfilled from a
+later import row; an existing room whose blocked seats disagree with the
+row is reported as a `room_blocked_seats` conflict and left unchanged.
+
+### Strategy behavior
+
+Both `SequentialSeatingStrategy` and `ConstraintSeatingStrategy` draw
+seat-number candidates exclusively from `usable_positions()` (falling
+back to plain `1..capacity` when no topology is configured at all, the
+same "sequential never requires a topology" guarantee Milestone 8
+established) — a blocked seat is skipped the same unremarkable way a
+seat that's already been filled is skipped, never as a bolted-on special
+case in the fill loop. For a room with zero blocked seats, the usable
+list is identical to the old raw range, so every pre-Milestone-10 test
+scenario (no topology, or topology with nothing blocked) produces
+byte-identical assignments to before.
+
+`usable_capacity_shortage` (see **Three distinct shortage diagnoses**
+above) is the new, third capacity flag this makes possible:
+`registered_student_count > total_usable_capacity`. Because it can be
+true independently of `physical_capacity_shortage`, both strategies take
+care to only describe a shortage as "caused by blocked seats" in their
+warning text when usable capacity is actually less than physical
+capacity for the affected room(s) — a pure physical-capacity shortfall
+(no blocking involved at all) gets its own, separate wording rather than
+misleadingly claiming seats are blocked when none are.
+
+### Frontend
+
+`RoomOut` gained `blocked_seat_numbers`, `physical_capacity`, and
+`usable_capacity` (the latter two `null` together whenever no topology is
+configured, mirroring `rows`/`columns`). The Rooms page adds three
+columns — *Physical Capacity*, *Usable Seats*, *Blocked Seats* — next to
+the existing *Rows*/*Columns*/*Topology* ones. `CapacityDiagnostics`
+gained a third, separately-labeled diagnostic item for
+`usable_capacity_shortage`, alongside the two Milestone 9 already showed.
+No seat-map UI, no per-seat click-to-block control anywhere — blocking
+remains CSV-import-only, matching the persistence decision above.
+
 ## Persistence boundary
 
 - SQLite via SQLAlchemy 2.0 declarative models (`app/db/models.py`).
@@ -1033,9 +1168,11 @@ paths exist under `/reports/`.
   produces the same `Registration`/`Student`/`Course` domain objects the
   CSV path produces. `domain/`, `repositories/`, `api/` response shapes
   are unaffected.
-- **Seat-level layout / anti-cheating adjacency**: introduce a `Seat`
-  entity and extend `SeatAssignment` to reference it, once a strategy
-  needs it.
+- **Seat-level anti-cheating adjacency**: seat-level layout and
+  availability already exist (`SeatTopology`, `SeatPosition`, blocked
+  seats — Milestone 10); what remains is a constraint that actually
+  *uses* adjacency-to-a-blocked-seat as a rule, and a `Seat` database
+  entity if per-seat state beyond blocked/usable is ever needed.
 - **Constraint configuration**: introduce a `Constraint` entity and a
   `SeatingGeneration.config` payload once `ConstraintSeatingStrategy`'s
   actual requirements are known.
@@ -1086,6 +1223,15 @@ The following are **not** implemented yet, anywhere in the codebase:
   define which specific students should (or shouldn't) sit together;
   today's default constraint set is built entirely in code
   (`_build_student_seating_contexts` in `strategies/constraint.py`).
+- **Per-seat blocking/availability is implemented as of Milestone 10**
+  (see **Physical seat layout and availability** above) — this used to be
+  entirely absent. What's still missing: a `Seat` database table or
+  per-seat CRUD endpoint (blocking is configured only via the room-import
+  CSV's optional `blockedseats` column, backed by a single JSON column on
+  `Room`), any graphical seat designer, and any anti-cheating rule that
+  reasons about *which specific* seats are adjacent to a blocked one
+  (the topology can already answer that query — see `is_adjacent` — but
+  no constraint uses it yet).
 - **Advanced seating UI** (seat-map visualization, drag-and-drop).
 - **Generation comparison UI** (diffing/comparing `SeatingGeneration` runs
   side by side — each generation's own report is available (Milestone 5),

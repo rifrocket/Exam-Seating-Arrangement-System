@@ -85,9 +85,9 @@ class StaticRoomTopologyProvider(RoomTopologyProvider):
             )
         rows, columns = dims
         topology = RectangularRoomTopology(room_id=room_id, rows=rows, columns=columns)
-        if topology.capacity != capacity:
+        if topology.physical_capacity != capacity:
             raise RoomTopologyMismatchError(
-                f"Configured topology for room '{room_code}' has {topology.capacity} seat(s) "
+                f"Configured topology for room '{room_code}' has {topology.physical_capacity} seat(s) "
                 f"({rows}x{columns}), but the room's actual physical capacity is {capacity}. "
                 "A topology must exactly match the room it describes."
             )

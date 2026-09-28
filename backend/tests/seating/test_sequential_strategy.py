@@ -9,6 +9,8 @@ import pytest
 from app.domain import Exam, GenerationStatus, Student
 from app.seating.models import RoomAllocation
 from app.seating.strategies.sequential import SequentialSeatingStrategy
+from app.seating.topology import RectangularRoomTopology
+from app.seating.topology_provider import RoomTopologyProvider
 
 EXAM = Exam(
     id=1,
@@ -22,6 +24,21 @@ EXAM = Exam(
 
 def _students(count: int) -> list[Student]:
     return [Student(id=i, student_number=str(1000 + i), full_name=f"Student {i}") for i in range(1, count + 1)]
+
+
+class _FixedTopologyProvider(RoomTopologyProvider):
+    """Minimal test double: returns one pre-built topology per room_id,
+    regardless of the room_code/capacity it's asked with. Only used by
+    the Milestone 10 blocked-seat tests below — every other test in this
+    file constructs SequentialSeatingStrategy() with no topology_provider
+    at all, exercising sequential's original, unchanged "no topology
+    needed" fallback path."""
+
+    def __init__(self, topologies_by_room_id: dict[int, RectangularRoomTopology]) -> None:
+        self._topologies = topologies_by_room_id
+
+    def get_topology(self, room_id: int, room_code: str, capacity: int):
+        return self._topologies[room_id]
 
 
 def test_basic_two_room_fifo_fill_matches_spec_example() -> None:
@@ -264,3 +281,136 @@ def test_neither_shortage_when_registered_fits_within_both() -> None:
     assert result.capacity_shortage is False
     assert result.unassigned_student_count == 0
     assert result.status == GenerationStatus.SUCCESS
+
+
+# --- Milestone 10: usable seats / blocked seats ----------------------------
+
+
+def test_normal_rectangular_room_with_topology_produces_the_same_result_as_without_one() -> None:
+    """A room with a configured topology but zero blocked seats must
+    produce byte-identical assignments to the pre-Milestone-10,
+    topology-less path — usable_capacity == physical_capacity when
+    nothing is blocked, so nothing about the fill changes."""
+    topology = RectangularRoomTopology(room_id=10, rows=4, columns=5)  # 20 seats, none blocked
+    provider = _FixedTopologyProvider({10: topology})
+    room_allocations = [RoomAllocation(room_id=10, room_code="500", allocated_students=20, capacity=20)]
+    students = _students(20)
+
+    with_topology = SequentialSeatingStrategy(topology_provider=provider).generate(EXAM, students, room_allocations)
+    without_topology = SequentialSeatingStrategy().generate(EXAM, students, room_allocations)
+
+    assert with_topology.assignments == without_topology.assignments
+    assert with_topology.total_usable_capacity == with_topology.total_physical_capacity == 20
+
+
+def test_blocked_seats_are_skipped_and_never_assigned() -> None:
+    topology = RectangularRoomTopology(room_id=10, rows=4, columns=5, blocked_seat_numbers={7, 17})
+    provider = _FixedTopologyProvider({10: topology})
+    room_allocations = [RoomAllocation(room_id=10, room_code="500", allocated_students=20, capacity=20)]
+    students = _students(18)
+
+    result = SequentialSeatingStrategy(topology_provider=provider).generate(EXAM, students, room_allocations)
+
+    assert result.total_physical_capacity == 20
+    assert result.total_usable_capacity == 18
+    assert result.assigned_student_count == 18
+    assert result.unassigned_student_count == 0
+    assigned_seat_numbers = {a.seat_number for a in result.assignments}
+    assert 7 not in assigned_seat_numbers
+    assert 17 not in assigned_seat_numbers
+    assert assigned_seat_numbers == {1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 18, 19, 20}
+
+
+def test_insufficient_usable_seats_leaves_exact_overflow_unassigned() -> None:
+    topology = RectangularRoomTopology(room_id=10, rows=4, columns=5, blocked_seat_numbers={7, 17})
+    provider = _FixedTopologyProvider({10: topology})
+    room_allocations = [RoomAllocation(room_id=10, room_code="500", allocated_students=20, capacity=20)]
+    students = _students(20)  # 2 more than the 18 usable seats
+
+    result = SequentialSeatingStrategy(topology_provider=provider).generate(EXAM, students, room_allocations)
+
+    assert result.assigned_student_count == 18
+    assert result.unassigned_student_count == 2
+    assert result.status == GenerationStatus.PARTIAL
+    # Physical capacity is unaffected by blocking — 20 registered does not
+    # exceed 20 physical seats, so this must NOT be a physical shortage.
+    assert result.physical_capacity_shortage is False
+    assert result.usable_capacity_shortage is True
+    assert result.capacity_shortage is True
+    assert any("blocked seat" in w.lower() for w in result.warnings)
+
+
+def test_blocked_seat_result_is_deterministic() -> None:
+    topology = RectangularRoomTopology(room_id=10, rows=4, columns=5, blocked_seat_numbers={7, 17})
+    provider = _FixedTopologyProvider({10: topology})
+    room_allocations = [RoomAllocation(room_id=10, room_code="500", allocated_students=20, capacity=20)]
+    students = _students(18)
+    strategy = SequentialSeatingStrategy(topology_provider=provider)
+
+    first = strategy.generate(EXAM, students, room_allocations)
+    second = strategy.generate(EXAM, students, room_allocations)
+
+    assert first.assignments == second.assignments
+
+
+# --- Milestone 10: capacity semantics (physical vs. usable) ---------------
+
+
+def test_capacity_physical_20_usable_20_registered_18() -> None:
+    topology = RectangularRoomTopology(room_id=10, rows=4, columns=5)  # no blocking
+    provider = _FixedTopologyProvider({10: topology})
+    room_allocations = [RoomAllocation(room_id=10, room_code="500", allocated_students=20, capacity=20)]
+    result = SequentialSeatingStrategy(topology_provider=provider).generate(EXAM, _students(18), room_allocations)
+
+    assert result.total_physical_capacity == 20
+    assert result.total_usable_capacity == 20
+    assert result.assigned_student_count == 18
+    assert result.unassigned_student_count == 0
+    assert result.scheduled_allocation_shortage is False
+    assert result.physical_capacity_shortage is False
+    assert result.usable_capacity_shortage is False
+
+
+def test_capacity_physical_20_usable_18_registered_18() -> None:
+    topology = RectangularRoomTopology(room_id=10, rows=4, columns=5, blocked_seat_numbers={7, 17})
+    provider = _FixedTopologyProvider({10: topology})
+    room_allocations = [RoomAllocation(room_id=10, room_code="500", allocated_students=20, capacity=20)]
+    result = SequentialSeatingStrategy(topology_provider=provider).generate(EXAM, _students(18), room_allocations)
+
+    assert result.total_physical_capacity == 20
+    assert result.total_usable_capacity == 18
+    assert result.assigned_student_count == 18
+    assert result.unassigned_student_count == 0
+    assert result.scheduled_allocation_shortage is False
+    assert result.physical_capacity_shortage is False
+    assert result.usable_capacity_shortage is False  # exactly enough usable seats
+
+
+def test_capacity_physical_20_usable_18_registered_20() -> None:
+    topology = RectangularRoomTopology(room_id=10, rows=4, columns=5, blocked_seat_numbers={7, 17})
+    provider = _FixedTopologyProvider({10: topology})
+    room_allocations = [RoomAllocation(room_id=10, room_code="500", allocated_students=20, capacity=20)]
+    result = SequentialSeatingStrategy(topology_provider=provider).generate(EXAM, _students(20), room_allocations)
+
+    assert result.total_physical_capacity == 20
+    assert result.total_usable_capacity == 18
+    assert result.assigned_student_count == 18
+    assert result.unassigned_student_count == 2
+    assert result.scheduled_allocation_shortage is False
+    assert result.physical_capacity_shortage is False  # 20 registered does not exceed 20 physical
+    assert result.usable_capacity_shortage is True  # but does exceed 18 usable
+
+
+def test_capacity_physical_20_usable_18_registered_21() -> None:
+    topology = RectangularRoomTopology(room_id=10, rows=4, columns=5, blocked_seat_numbers={7, 17})
+    provider = _FixedTopologyProvider({10: topology})
+    room_allocations = [RoomAllocation(room_id=10, room_code="500", allocated_students=20, capacity=20)]
+    result = SequentialSeatingStrategy(topology_provider=provider).generate(EXAM, _students(21), room_allocations)
+
+    assert result.total_physical_capacity == 20
+    assert result.total_usable_capacity == 18
+    assert result.assigned_student_count == 18
+    assert result.unassigned_student_count == 3
+    assert result.scheduled_allocation_shortage is True  # 21 registered exceeds the scheduled 20 too
+    assert result.physical_capacity_shortage is True  # 21 registered exceeds 20 physical
+    assert result.usable_capacity_shortage is True  # and exceeds 18 usable too

@@ -57,6 +57,10 @@ export interface RoomOut {
   capacity: number;
   rows: number | null;
   columns: number | null;
+  blocked_seat_numbers: number[];
+  // Both null when no topology is configured.
+  physical_capacity: number | null;
+  usable_capacity: number | null;
 }
 
 export interface RoomImportResult {
@@ -131,12 +135,14 @@ export interface SeatingGenerationOut {
 export interface SeatingGenerationResult extends SeatingGenerationOut {
   scheduled_student_count: number;
   total_physical_capacity: number;
+  total_usable_capacity: number;
   available_capacity: number;
   unassigned_student_ids: number[];
   // capacity_shortage (inherited) only answers "did anyone go unassigned?".
-  // These two answer "why" and are not mutually exclusive.
+  // These three answer "why" and are not mutually exclusive.
   scheduled_allocation_shortage: boolean;
   physical_capacity_shortage: boolean;
+  usable_capacity_shortage: boolean;
 }
 
 export interface SeatAssignmentOut {

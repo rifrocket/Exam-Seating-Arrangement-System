@@ -2,11 +2,13 @@ import { AlertTriangle } from "lucide-react";
 import { SeatingGenerationResult } from "@/lib/api";
 
 /**
- * Renders the two distinct shortage reasons a generation can have
- * (scheduled_allocation_shortage vs. physical_capacity_shortage) as
- * separate, clearly-labeled items — never collapsed into one generic
- * "capacity shortage" message, since they mean different things and call
- * for different fixes.
+ * Renders the three distinct shortage reasons a generation can have
+ * (scheduled_allocation_shortage, physical_capacity_shortage,
+ * usable_capacity_shortage) as separate, clearly-labeled items — never
+ * collapsed into one generic "capacity shortage" message, since they mean
+ * different things and call for different fixes. The three are not
+ * mutually exclusive (usable capacity shortage can co-occur with physical
+ * capacity shortage, since usable seats are a subset of physical ones).
  */
 export function CapacityDiagnostics({
   result,
@@ -37,6 +39,14 @@ export function CapacityDiagnostics({
             the rooms assigned to this exam have only{" "}
             {result.total_physical_capacity} physical seat(s) total,
             regardless of what was scheduled.
+          </li>
+        )}
+        {result.usable_capacity_shortage && (
+          <li className="rounded-md bg-white/60 p-2">
+            <span className="font-semibold">Usable capacity shortage</span> —
+            the rooms assigned to this exam have only{" "}
+            {result.total_usable_capacity} usable seat(s) once blocked seats
+            are excluded, even though physical capacity may be higher.
           </li>
         )}
       </ul>

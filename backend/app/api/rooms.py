@@ -11,11 +11,33 @@ from app.api.schemas import (
 )
 from app.db.repositories import SqlAlchemyRoomRepository
 from app.db.session import get_db_session
+from app.domain import Room
 from app.services.room_import import RoomImportService
 
 router = APIRouter(tags=["rooms"])
 
 MAX_PAGE_SIZE = 200
+
+
+def _to_room_out(room: Room) -> RoomOut:
+    # Room is the only place blocking is remembered (see docs/architecture.md's
+    # "Availability" section) — physical/usable capacity are therefore
+    # always derived from its own rows/columns/blocked_seat_numbers here,
+    # never a separately-configurable fact.
+    physical_capacity = room.rows * room.columns if room.has_topology else None
+    usable_capacity = (
+        physical_capacity - len(room.blocked_seat_numbers) if physical_capacity is not None else None
+    )
+    return RoomOut(
+        id=room.id,
+        code=room.code,
+        capacity=room.capacity,
+        rows=room.rows,
+        columns=room.columns,
+        blocked_seat_numbers=list(room.blocked_seat_numbers),
+        physical_capacity=physical_capacity,
+        usable_capacity=usable_capacity,
+    )
 
 
 def _room_import_service(session: Session = Depends(get_db_session)) -> RoomImportService:
@@ -70,6 +92,6 @@ def list_rooms(
     items = repo.list(limit=limit, offset=offset)
     total = repo.count()
     return RoomListResponse(
-        items=[RoomOut(id=r.id, code=r.code, capacity=r.capacity, rows=r.rows, columns=r.columns) for r in items],
+        items=[_to_room_out(r) for r in items],
         meta=PageMeta(total=total, limit=limit, offset=offset),
     )

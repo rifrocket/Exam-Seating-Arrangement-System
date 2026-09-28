@@ -12,7 +12,8 @@ from app.seating.constraints import ConstraintSet, SeparateCoursesConstraint, St
 from app.seating.models import RoomAllocation
 from app.seating.strategies.constraint import ConstraintSeatingStrategy
 from app.seating.strategies.sequential import SequentialSeatingStrategy
-from app.seating.topology_provider import StaticRoomTopologyProvider
+from app.seating.topology import RectangularRoomTopology
+from app.seating.topology_provider import RoomTopologyProvider, StaticRoomTopologyProvider
 
 EXAM = Exam(
     id=1,
@@ -32,6 +33,18 @@ def _students(count: int, start: int = 1) -> list[Student]:
 
 def _provider(**layouts: tuple[int, int]) -> StaticRoomTopologyProvider:
     return StaticRoomTopologyProvider(layouts)
+
+
+class _FixedTopologyProvider(RoomTopologyProvider):
+    """Minimal test double for the Milestone 10 blocked-seat tests below —
+    StaticRoomTopologyProvider has no way to configure blocked seats, so
+    these tests build a RectangularRoomTopology directly instead."""
+
+    def __init__(self, topologies_by_room_id: dict[int, RectangularRoomTopology]) -> None:
+        self._topologies = topologies_by_room_id
+
+    def get_topology(self, room_id: int, room_code: str, capacity: int):
+        return self._topologies[room_id]
 
 
 # --- Test 1: strategy registration -----------------------------------
@@ -257,3 +270,93 @@ def test_room_fill_order_matches_room_allocations_order() -> None:
     room_b_students = {a.student_id for a in result.assignments if a.room_id == 2}
     assert room_a_students == {1, 2, 3, 4, 5}
     assert room_b_students == {6, 7}
+
+
+# --- Milestone 10: usable seats / blocked seats -----------------------------
+
+
+def test_blocked_seats_are_excluded_from_candidates() -> None:
+    topology = RectangularRoomTopology(room_id=1, rows=4, columns=5, blocked_seat_numbers={7, 17})
+    provider = _FixedTopologyProvider({1: topology})
+    room_allocations = [RoomAllocation(room_id=1, room_code="500", allocated_students=20, capacity=20)]
+    strategy = ConstraintSeatingStrategy(topology_provider=provider, constraint_set=ConstraintSet())
+
+    result = strategy.generate(EXAM, _students(18), room_allocations)
+
+    assert result.total_physical_capacity == 20
+    assert result.total_usable_capacity == 18
+    assert result.assigned_student_count == 18
+    assert result.unassigned_student_count == 0
+    seat_numbers = {a.seat_number for a in result.assignments}
+    assert 7 not in seat_numbers
+    assert 17 not in seat_numbers
+
+
+def test_hard_constraints_remain_enforced_around_blocked_seats() -> None:
+    topology = RectangularRoomTopology(room_id=1, rows=1, columns=5, blocked_seat_numbers={3})
+    provider = _FixedTopologyProvider({1: topology})
+    room_allocations = [RoomAllocation(room_id=1, room_code="500", allocated_students=5, capacity=5)]
+    not_adjacent = StudentsNotAdjacentConstraint(student_a_id=1, student_b_id=2, topologies={1: topology})
+    strategy = ConstraintSeatingStrategy(
+        topology_provider=provider, constraint_set=ConstraintSet(hard_constraints=(not_adjacent,))
+    )
+
+    result = strategy.generate(EXAM, _students(2), room_allocations)
+
+    seat_by_student = {a.student_id: a.seat_number for a in result.assignments}
+    assert 3 not in seat_by_student.values()  # blocked seat never a candidate at all
+    # Seat 1 and seat 2 are adjacent; seat 3 is blocked (skipped entirely,
+    # not a candidate); student 1 gets seat 1, student 2 must skip seat 2
+    # (adjacent, hard-blocked) and land on seat 4 (seat 3 not offered).
+    assert seat_by_student[1] == 1
+    assert seat_by_student[2] == 4
+
+
+def test_soft_constraints_still_evaluated_with_blocked_seats_present() -> None:
+    topology = RectangularRoomTopology(room_id=1, rows=1, columns=5, blocked_seat_numbers={3})
+    provider = _FixedTopologyProvider({1: topology})
+    room_allocations = [RoomAllocation(room_id=1, room_code="500", allocated_students=5, capacity=5)]
+    course_ids = {1: 100, 2: 200}
+    soft = SeparateCoursesConstraint(student_course_ids=course_ids, topologies={1: topology})
+    strategy = ConstraintSeatingStrategy(
+        topology_provider=provider, constraint_set=ConstraintSet(soft_constraints=(soft,))
+    )
+
+    result = strategy.generate(EXAM, _students(2), room_allocations)
+
+    seat_by_student = {a.student_id: a.seat_number for a in result.assignments}
+    assert seat_by_student[1] == 1
+    # Seat 2 is adjacent to seat 1 (different course -> soft violation);
+    # seat 3 is blocked; seat 4 is not adjacent to seat 1 -> preferred.
+    assert seat_by_student[2] == 4
+
+
+def test_course_separation_still_works_with_blocked_seats() -> None:
+    """The default (student_course_ids-driven) course-separation behavior
+    from the session-generation path is unaffected by blocked seats."""
+    topology = RectangularRoomTopology(room_id=1, rows=1, columns=5, blocked_seat_numbers={3})
+    provider = _FixedTopologyProvider({1: topology})
+    room_allocations = [RoomAllocation(room_id=1, room_code="500", allocated_students=5, capacity=5)]
+    strategy = ConstraintSeatingStrategy(
+        topology_provider=provider, student_course_ids={1: 100, 2: 200}
+    )
+
+    result = strategy.generate(EXAM, _students(2), room_allocations)
+
+    seat_by_student = {a.student_id: a.seat_number for a in result.assignments}
+    assert 3 not in seat_by_student.values()
+    assert seat_by_student[1] == 1
+    assert seat_by_student[2] == 4  # different course, seat 2 skipped for the same reason as above
+
+
+def test_blocked_seat_result_is_deterministic() -> None:
+    topology = RectangularRoomTopology(room_id=1, rows=4, columns=5, blocked_seat_numbers={7, 17})
+    provider = _FixedTopologyProvider({1: topology})
+    room_allocations = [RoomAllocation(room_id=1, room_code="500", allocated_students=18, capacity=20)]
+    strategy = ConstraintSeatingStrategy(topology_provider=provider, constraint_set=ConstraintSet())
+    students = _students(18)
+
+    first = strategy.generate(EXAM, students, room_allocations)
+    second = strategy.generate(EXAM, students, room_allocations)
+
+    assert first.assignments == second.assignments

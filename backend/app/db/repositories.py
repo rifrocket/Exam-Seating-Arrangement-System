@@ -59,7 +59,14 @@ def _registration_to_domain(model: RegistrationModel) -> Registration:
 
 
 def _room_to_domain(model: RoomModel) -> Room:
-    return Room(id=model.id, code=model.code, capacity=model.capacity, rows=model.rows, columns=model.columns)
+    return Room(
+        id=model.id,
+        code=model.code,
+        capacity=model.capacity,
+        rows=model.rows,
+        columns=model.columns,
+        blocked_seat_numbers=tuple(model.blocked_seat_numbers or ()),
+    )
 
 
 def _exam_to_domain(model: ExamModel) -> Exam:
@@ -237,7 +244,13 @@ class SqlAlchemyRoomRepository(RoomRepository):
         return self._session.scalar(select(func.count()).select_from(RoomModel)) or 0
 
     def add(self, entity: Room) -> Room:
-        model = RoomModel(code=entity.code, capacity=entity.capacity, rows=entity.rows, columns=entity.columns)
+        model = RoomModel(
+            code=entity.code,
+            capacity=entity.capacity,
+            rows=entity.rows,
+            columns=entity.columns,
+            blocked_seat_numbers=list(entity.blocked_seat_numbers),
+        )
         self._session.add(model)
         self._session.flush()
         return _room_to_domain(model)
@@ -253,6 +266,17 @@ class SqlAlchemyRoomRepository(RoomRepository):
             raise ValueError(f"Room {room_id} does not exist.")
         model.rows = rows
         model.columns = columns
+        self._session.flush()
+        return _room_to_domain(model)
+
+    def set_blocked_seats(self, room_id: int, blocked_seat_numbers: tuple[int, ...]) -> Room:
+        """Backfills blocked_seat_numbers on an existing room that has
+        none configured yet. Like set_topology(), a narrow method rather
+        than a generic update() — the only caller is RoomImportService."""
+        model = self._session.get(RoomModel, room_id)
+        if model is None:
+            raise ValueError(f"Room {room_id} does not exist.")
+        model.blocked_seat_numbers = list(blocked_seat_numbers)
         self._session.flush()
         return _room_to_domain(model)
 

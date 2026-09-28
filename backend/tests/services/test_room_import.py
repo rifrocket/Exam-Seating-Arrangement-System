@@ -143,3 +143,79 @@ def test_capacity_conflict_kind_is_reported_correctly(db_session: Session) -> No
     result = service.import_csv(LOCATIONS_HEADER + "1,101,50\n")
 
     assert result.conflicts[0].kind == "room_capacity"
+
+
+# --- BlockedSeats column (Milestone 10) -------------------------------------
+
+
+def test_blocked_seats_csv_column_imports_successfully(db_session: Session) -> None:
+    service = RoomImportService(SqlAlchemyRoomRepository(db_session))
+    csv_text = "room,capacity,rows,columns,blockedseats\n500,20,4,5,7;17\n"
+
+    result = service.import_csv(csv_text)
+
+    assert result.status.value == "success"
+    stored = SqlAlchemyRoomRepository(db_session).get_by_code("500")
+    assert stored is not None
+    assert stored.blocked_seat_numbers == (7, 17)
+
+
+def test_blocked_seats_are_optional_and_default_to_none(db_session: Session) -> None:
+    service = RoomImportService(SqlAlchemyRoomRepository(db_session))
+    csv_text = "room,capacity,rows,columns,blockedseats\n500,20,4,5,\n"
+
+    result = service.import_csv(csv_text)
+
+    assert result.status.value == "success"
+    stored = SqlAlchemyRoomRepository(db_session).get_by_code("500")
+    assert stored is not None
+    assert stored.blocked_seat_numbers == ()
+
+
+def test_blocked_seats_without_topology_on_the_same_row_is_rejected(db_session: Session) -> None:
+    service = RoomImportService(SqlAlchemyRoomRepository(db_session))
+    csv_text = "room,capacity,blockedseats\n500,20,7;17\n"  # no rows/columns column at all
+
+    result = service.import_csv(csv_text)
+
+    assert result.status.value == "partial"
+    assert "rows and columns" in result.validation_errors[0].message
+    assert SqlAlchemyRoomRepository(db_session).get_by_code("500") is None  # rejected, not half-created
+
+
+def test_blocked_seat_out_of_range_is_rejected_and_room_not_created(db_session: Session) -> None:
+    service = RoomImportService(SqlAlchemyRoomRepository(db_session))
+    csv_text = "room,capacity,rows,columns,blockedseats\n500,20,4,5,99\n"
+
+    result = service.import_csv(csv_text)
+
+    assert result.status.value == "partial"
+    assert SqlAlchemyRoomRepository(db_session).get_by_code("500") is None
+
+
+def test_existing_room_without_blocked_seats_gets_them_backfilled(db_session: Session) -> None:
+    service = RoomImportService(SqlAlchemyRoomRepository(db_session))
+    service.import_csv("room,capacity,rows,columns\n500,20,4,5\n")
+    db_session.commit()
+
+    result = service.import_csv("room,capacity,rows,columns,blockedseats\n500,20,4,5,7;17\n")
+
+    assert result.rooms_existing == 1
+    assert result.conflicts == []
+    stored = SqlAlchemyRoomRepository(db_session).get_by_code("500")
+    assert stored is not None
+    assert stored.blocked_seat_numbers == (7, 17)
+
+
+def test_conflicting_blocked_seats_on_existing_room_is_reported_and_not_overwritten(db_session: Session) -> None:
+    service = RoomImportService(SqlAlchemyRoomRepository(db_session))
+    service.import_csv("room,capacity,rows,columns,blockedseats\n500,20,4,5,7;17\n")
+    db_session.commit()
+
+    result = service.import_csv("room,capacity,rows,columns,blockedseats\n500,20,4,5,3\n")
+
+    assert len(result.conflicts) == 1
+    assert result.conflicts[0].kind == "room_blocked_seats"
+    stored = SqlAlchemyRoomRepository(db_session).get_by_code("500")
+    assert stored is not None
+    assert stored.blocked_seat_numbers == (7, 17)  # unchanged

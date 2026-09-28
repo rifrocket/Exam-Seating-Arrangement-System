@@ -27,13 +27,21 @@ fill order. `test_constraint_strategy.py::test_matches_sequential_strategy_when_
 asserts this byte-for-byte.
 
 Capacity semantics are untouched from `SequentialSeatingStrategy`:
-`scheduled_allocation_shortage` and `physical_capacity_shortage` are
-computed the same way, from the same raw counts, regardless of how the
-constructive algorithm actually placed students. A student going
-unassigned because every remaining seat violated a hard constraint is a
-distinct fact — a *constraint* shortfall, not a *capacity* one — and is
-reported only as an additional entry in `warnings`, never by
-reinterpreting either shortage flag (see docs/architecture.md).
+`scheduled_allocation_shortage`, `physical_capacity_shortage`, and
+`usable_capacity_shortage` (Milestone 10) are computed the same way, from
+the same raw counts, regardless of how the constructive algorithm
+actually placed students. A student going unassigned because every
+remaining seat violated a hard constraint is a distinct fact — a
+*constraint* shortfall, not a *capacity* one — and is reported only as an
+additional entry in `warnings`, never by reinterpreting any shortage flag
+(see docs/architecture.md).
+
+Usable seats (Milestone 10): candidate seats are always drawn from
+`topology.usable_positions()`, never `position_for_seat()` over a raw
+`1..capacity` range — a blocked seat is never a seating candidate in the
+first place, the same way an already-taken seat isn't (this strategy
+already required a topology for every room, unlike sequential, so there
+is no "topology unavailable" fallback path to reconcile here).
 
 Topology (Milestone 8): this strategy no longer carries a hardcoded
 room-code -> layout mapping. `get_strategy("constraint")` (called by
@@ -137,21 +145,29 @@ class ConstraintSeatingStrategy(SeatingStrategy):
         warnings: list[str] = []
         topologies: dict[int, SeatTopology] = {}
         candidate_seats: list[SeatPosition] = []
+        total_usable_capacity = 0
         for ra in room_allocations:
             topology = self._topology_provider.get_topology(
                 room_id=ra.room_id, room_code=ra.room_code, capacity=ra.capacity
             )
             topologies[ra.room_id] = topology
+            usable_capacity = topology.usable_capacity
+            total_usable_capacity += usable_capacity
 
-            target = ra.allocated_students
             if ra.allocated_students > ra.capacity:
-                target = ra.capacity
                 warnings.append(
                     f"Room '{ra.room_code}' scheduled allocation ({ra.allocated_students}) exceeds its "
                     f"capacity ({ra.capacity}); capped at {ra.capacity} for this generation."
                 )
-            for seat_number in range(1, target + 1):
-                candidate_seats.append(topology.position_for_seat(seat_number))
+            if usable_capacity < ra.capacity and ra.allocated_students > usable_capacity:
+                warnings.append(
+                    f"Room '{ra.room_code}' has {ra.capacity - usable_capacity} blocked seat(s); only "
+                    f"{usable_capacity} of its {ra.capacity} physical seat(s) are usable, which is less "
+                    f"than its scheduled allocation ({ra.allocated_students})."
+                )
+
+            target = min(ra.allocated_students, ra.capacity, usable_capacity)
+            candidate_seats.extend(topology.usable_positions()[:target])
 
         available_capacity = len(candidate_seats)
 
@@ -165,6 +181,18 @@ class ConstraintSeatingStrategy(SeatingStrategy):
                 f"Only {registered_student_count} student(s) registered; "
                 f"{scheduled_student_count - registered_student_count} scheduled seat(s) will remain unused."
             )
+        if registered_student_count > total_usable_capacity:
+            if total_usable_capacity < total_physical_capacity:
+                warnings.append(
+                    f"{registered_student_count} student(s) registered but only {total_usable_capacity} usable "
+                    f"seat(s) are available across this exam's rooms ({total_physical_capacity} physically "
+                    "exist, but some are blocked)."
+                )
+            else:
+                warnings.append(
+                    f"{registered_student_count} student(s) registered but only {total_physical_capacity} "
+                    "physical seat(s) exist across this exam's rooms."
+                )
 
         constraint_set = self._constraint_set
         if constraint_set is None:
@@ -230,13 +258,14 @@ class ConstraintSeatingStrategy(SeatingStrategy):
         assigned_student_count = len(assignments)
         unassigned_student_count = len(unassigned_student_ids)
 
-        # Same three independent facts as SequentialSeatingStrategy, computed
-        # the same way — see SeatingResult's docstring. A constraint-caused
+        # Same independent facts as SequentialSeatingStrategy, computed the
+        # same way — see SeatingResult's docstring. A constraint-caused
         # unassignment is reported only via the warning above, never by
-        # reinterpreting these two flags (see this module's docstring).
+        # reinterpreting any of these flags (see this module's docstring).
         capacity_shortage = unassigned_student_count > 0
         scheduled_allocation_shortage = registered_student_count > scheduled_student_count
         physical_capacity_shortage = registered_student_count > total_physical_capacity
+        usable_capacity_shortage = registered_student_count > total_usable_capacity
 
         if registered_student_count == 0:
             status = GenerationStatus.SUCCESS
@@ -253,12 +282,14 @@ class ConstraintSeatingStrategy(SeatingStrategy):
             registered_student_count=registered_student_count,
             scheduled_student_count=scheduled_student_count,
             total_physical_capacity=total_physical_capacity,
+            total_usable_capacity=total_usable_capacity,
             available_capacity=available_capacity,
             assigned_student_count=assigned_student_count,
             unassigned_student_count=unassigned_student_count,
             capacity_shortage=capacity_shortage,
             scheduled_allocation_shortage=scheduled_allocation_shortage,
             physical_capacity_shortage=physical_capacity_shortage,
+            usable_capacity_shortage=usable_capacity_shortage,
             assignments=assignments,
             unassigned_student_ids=unassigned_student_ids,
             warnings=warnings,

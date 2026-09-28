@@ -209,10 +209,11 @@ export default function ExaminationSessionDetailPage() {
                     <StatusBadge status={latest.status} />
                   </div>
 
-                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-6">
                     <StatCard label="Registered" value={latest.total_registered} tone="neutral" />
                     <StatCard label="Scheduled" value={latest.scheduled_student_count} tone="neutral" />
                     <StatCard label="Physical Capacity" value={latest.total_physical_capacity} tone="neutral" />
+                    <StatCard label="Usable Capacity" value={latest.total_usable_capacity} tone="neutral" />
                     <StatCard label="Assigned" value={latest.total_assigned} tone="success" />
                     <StatCard
                       label="Unassigned"

@@ -451,3 +451,90 @@ def test_session_registered_more_than_physical_capacity_is_reported(db_session: 
     assert outcome.scheduled_allocation_shortage is False
     assert outcome.physical_capacity_shortage is True
     assert outcome.generation.total_unassigned == 6
+
+
+# --- blocked seats (Milestone 10) -------------------------------------------
+
+
+def test_session_generation_respects_blocked_seats_across_shared_room(db_session: Session) -> None:
+    """One room (401, 4x5 = 20 physical seats, 2 blocked -> 18 usable)
+    shared by two courses of 9 students each within a session. All 18
+    students must be seated, and none of them on the two blocked seats."""
+    course_a = SqlAlchemyCourseRepository(db_session).add(Course(id=None, code="CS101", name="CS101"))
+    course_b = SqlAlchemyCourseRepository(db_session).add(Course(id=None, code="MATH101", name="MATH101"))
+    exam_a = SqlAlchemyExamRepository(db_session).add(
+        Exam(id=None, course_id=course_a.id, exam_date=DATE, time_slot=TIME_SLOT, expected_student_count=9)
+    )
+    exam_b = SqlAlchemyExamRepository(db_session).add(
+        Exam(id=None, course_id=course_b.id, exam_date=DATE, time_slot=TIME_SLOT, expected_student_count=9)
+    )
+    shared_room = SqlAlchemyRoomRepository(db_session).add(
+        Room(id=None, code="401", capacity=20, rows=4, columns=5, blocked_seat_numbers=(7, 17))
+    )
+    exam_room_repo = SqlAlchemyExamRoomRepository(db_session)
+    exam_room_repo.add(ExamRoom(id=None, exam_id=exam_a.id, room_id=shared_room.id, allocated_students=9))
+    exam_room_repo.add(ExamRoom(id=None, exam_id=exam_b.id, room_id=shared_room.id, allocated_students=9))
+
+    student_repo = SqlAlchemyStudentRepository(db_session)
+    registration_repo = SqlAlchemyRegistrationRepository(db_session)
+    for prefix, course in (("A", course_a), ("B", course_b)):
+        for i in range(1, 10):
+            student = student_repo.add(Student(id=None, student_number=f"{prefix}{i:03d}", full_name=f"{prefix} {i}"))
+            registration_repo.add(Registration(id=None, student_id=student.id, course_id=course.id))
+    db_session.commit()
+
+    session = _session_service(db_session).create_session([exam_a.id, exam_b.id])
+    db_session.commit()
+
+    outcome = _seating_service(db_session).generate_session(session.id, strategy_name="constraint")
+    db_session.commit()
+
+    assert outcome.generation.total_registered == 18
+    assert outcome.generation.total_assigned == 18
+    assert outcome.generation.total_unassigned == 0
+    assert outcome.total_physical_capacity == 20
+    assert outcome.total_usable_capacity == 18
+    assert outcome.physical_capacity_shortage is False
+    assert outcome.usable_capacity_shortage is False
+
+    assignments = SqlAlchemySeatAssignmentRepository(db_session).list_by_generation(outcome.generation.id)
+    assert len(assignments) == 18
+    assigned_seat_numbers = {a.seat_number for a in assignments}
+    assert 7 not in assigned_seat_numbers
+    assert 17 not in assigned_seat_numbers
+
+
+def test_session_generation_reports_usable_capacity_shortage_caused_by_blocking(db_session: Session) -> None:
+    """Physical capacity (20) is enough for 19 registered students, but
+    with one seat blocked, usable capacity (19 - well within!) -- so make
+    it tighter: block enough seats that registered > usable even though
+    registered <= physical, proving usable_capacity_shortage is
+    distinguishable from physical_capacity_shortage."""
+    course_a = SqlAlchemyCourseRepository(db_session).add(Course(id=None, code="CS101", name="CS101"))
+    exam_a = SqlAlchemyExamRepository(db_session).add(
+        Exam(id=None, course_id=course_a.id, exam_date=DATE, time_slot=TIME_SLOT, expected_student_count=19)
+    )
+    room = SqlAlchemyRoomRepository(db_session).add(
+        Room(id=None, code="401", capacity=20, rows=4, columns=5, blocked_seat_numbers=(1, 2, 3))
+    )
+    SqlAlchemyExamRoomRepository(db_session).add(
+        ExamRoom(id=None, exam_id=exam_a.id, room_id=room.id, allocated_students=19)
+    )
+    student_repo = SqlAlchemyStudentRepository(db_session)
+    registration_repo = SqlAlchemyRegistrationRepository(db_session)
+    for i in range(1, 20):
+        student = student_repo.add(Student(id=None, student_number=f"A{i:03d}", full_name=f"A {i}"))
+        registration_repo.add(Registration(id=None, student_id=student.id, course_id=course_a.id))
+    db_session.commit()
+
+    session = _session_service(db_session).create_session([exam_a.id])
+    db_session.commit()
+
+    outcome = _seating_service(db_session).generate_session(session.id, strategy_name="constraint")
+
+    assert outcome.generation.total_registered == 19
+    assert outcome.total_physical_capacity == 20
+    assert outcome.total_usable_capacity == 17  # 20 - 3 blocked
+    assert outcome.physical_capacity_shortage is False  # 19 <= 20
+    assert outcome.usable_capacity_shortage is True  # 19 > 17
+    assert outcome.generation.total_unassigned == 2

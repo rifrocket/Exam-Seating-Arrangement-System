@@ -26,7 +26,7 @@ def test_returns_topology_for_a_room_with_arbitrary_code(db_session: Session) ->
 
     topology = provider.get_topology(room_id=room.id, room_code="ROOM-X", capacity=10)
 
-    assert topology.capacity == 10
+    assert topology.physical_capacity == 10
 
 
 def test_room_without_configured_topology_raises_missing_error(db_session: Session) -> None:

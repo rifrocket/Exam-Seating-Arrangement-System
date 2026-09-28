@@ -1,6 +1,7 @@
 """RepositoryRoomTopologyProvider: the production RoomTopologyProvider,
-reading each room's configured `rows`/`columns` (Milestone 8, see
-`app.domain.room.Room`) through a `RoomRepository`.
+reading each room's configured `rows`/`columns` (Milestone 8) and
+`blocked_seat_numbers` (Milestone 10, see `app.domain.room.Room`)
+through a `RoomRepository`.
 
 Lives here, not in `app.seating`, specifically because it needs a
 repository — the same reason `SeatingService` itself, not anything in
@@ -44,4 +45,9 @@ class RepositoryRoomTopologyProvider(RoomTopologyProvider):
                 f"({capacity} then vs {room.capacity} now)."
             )
         assert room.rows is not None and room.columns is not None
-        return RectangularRoomTopology(room_id=room_id, rows=room.rows, columns=room.columns)
+        return RectangularRoomTopology(
+            room_id=room_id,
+            rows=room.rows,
+            columns=room.columns,
+            blocked_seat_numbers=room.blocked_seat_numbers,
+        )

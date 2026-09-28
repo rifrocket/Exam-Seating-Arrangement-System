@@ -15,7 +15,7 @@ def test_get_topology_returns_a_topology_matching_the_configured_layout() -> Non
 
     topology = provider.get_topology(room_id=1, room_code="401", capacity=10)
 
-    assert topology.capacity == 10
+    assert topology.physical_capacity == 10
     position = topology.position_for_seat(6)
     assert (position.row, position.column) == (1, 0)
 

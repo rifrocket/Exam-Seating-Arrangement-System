@@ -198,8 +198,10 @@ def generate_session_seating(
         **base.model_dump(),
         scheduled_student_count=outcome.scheduled_student_count,
         total_physical_capacity=outcome.total_physical_capacity,
+        total_usable_capacity=outcome.total_usable_capacity,
         available_capacity=outcome.available_capacity,
         unassigned_student_ids=outcome.unassigned_student_ids,
         scheduled_allocation_shortage=outcome.scheduled_allocation_shortage,
         physical_capacity_shortage=outcome.physical_capacity_shortage,
+        usable_capacity_shortage=outcome.usable_capacity_shortage,
     )
