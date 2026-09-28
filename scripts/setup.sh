@@ -73,10 +73,34 @@ fi
 
 echo "Installing backend dependencies..."
 if command -v uv >/dev/null 2>&1; then
+  # uv's own installer never needs a `pip` binary inside the venv at all
+  # — preferred whenever uv is available, regardless of which tool
+  # originally created backend/.venv (a `uv venv`-created one, in
+  # particular, deliberately does not bundle pip).
   (cd "$BACKEND_DIR" && uv pip install --python .venv/bin/python -e ".[dev]" --quiet)
 else
-  "$BACKEND_DIR/.venv/bin/pip" install --quiet --upgrade pip
-  (cd "$BACKEND_DIR" && "$BACKEND_DIR/.venv/bin/pip" install --quiet -e ".[dev]")
+  # A venv created by `python3 -m venv` doesn't always bundle pip: some
+  # Debian/Ubuntu systems need the OS's python3-venv package (with its
+  # own ensurepip support) installed for that, and otherwise produce a
+  # pip-less venv with no error at creation time. Checked and bootstrapped
+  # functionally (`python -m pip`), not by looking for a `pip` file —
+  # ensurepip itself doesn't always create a plain `pip` script (some
+  # builds only produce versioned ones like `pip3`/`pip3.13`), so `python
+  # -m pip` is used for every install below too, sidestepping the
+  # question of which console-script name actually exists entirely.
+  if ! "$BACKEND_DIR/.venv/bin/python" -m pip --version >/dev/null 2>&1; then
+    echo "backend/.venv has no pip yet — bootstrapping it (ensurepip)..."
+    if ! "$BACKEND_DIR/.venv/bin/python" -m ensurepip --upgrade >/dev/null 2>&1; then
+      echo "Could not bootstrap pip inside backend/.venv (ensurepip unavailable)." >&2
+      echo "On Debian/Ubuntu: sudo apt install python3-venv (matching your python3" >&2
+      echo "version), then remove backend/.venv and re-run 'make setup'." >&2
+      echo "Alternatively, install uv (https://docs.astral.sh/uv/), which does not" >&2
+      echo "need pip in the venv at all." >&2
+      exit 1
+    fi
+  fi
+  "$BACKEND_DIR/.venv/bin/python" -m pip install --quiet --upgrade pip
+  (cd "$BACKEND_DIR" && "$BACKEND_DIR/.venv/bin/python" -m pip install --quiet -e ".[dev]")
 fi
 
 echo "Checking frontend dependencies (frontend/node_modules)..."
