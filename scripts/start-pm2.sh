@@ -51,6 +51,13 @@ export BACKEND_PORT="$(get_env_value "$BACKEND_ENV" "BACKEND_PORT" "8000")"
 export FRONTEND_HOST="$(get_env_value "$FRONTEND_ENV" "FRONTEND_HOST" "0.0.0.0")"
 export FRONTEND_PORT="$(get_env_value "$FRONTEND_ENV" "FRONTEND_PORT" "3000")"
 
+# ecosystem.config.js unconditionally sets APP_ENVIRONMENT=production
+# (backend) and NODE_ENV=production (frontend) in each app's own `env`
+# block — this always wins over backend/.env's own APP_ENVIRONMENT, so
+# PM2-managed processes run in production mode regardless of that file's
+# contents or whether this script is bypassed in favor of `pm2 start
+# ecosystem.config.js` directly.
+echo "Starting under a forced production environment (APP_ENVIRONMENT=production, NODE_ENV=production)..."
 pm2 startOrReload "$ROOT_DIR/ecosystem.config.js"
 pm2 save
 

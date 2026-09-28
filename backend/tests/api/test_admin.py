@@ -94,9 +94,19 @@ def test_empty_password_is_rejected(client: TestClient, monkeypatch) -> None:
     assert response.status_code == 401
 
 
-def test_unconfigured_admin_password_rejects_every_attempt(client: TestClient, monkeypatch) -> None:
+def test_unconfigured_admin_password_rejects_every_attempt(client: TestClient, monkeypatch, tmp_path) -> None:
     """No APP_ADMIN_PASSWORD configured at all — the endpoint must not
-    fall back to accepting anything; it fails safely closed."""
+    fall back to accepting anything; it fails safely closed.
+
+    `monkeypatch.chdir(tmp_path)` (an empty directory) is what actually
+    makes this "unconfigured": `_set_admin_password(monkeypatch, None)`
+    only clears the *environment variable*, but Settings.model_config
+    also reads a relative "./.env" file — a real backend/.env (gitignored,
+    created by `make setup`, entirely legitimate on a developer's own
+    machine) would still supply APP_ADMIN_PASSWORD from disk otherwise,
+    making this test pass or fail depending on whether the machine
+    running it happens to have run setup before."""
+    monkeypatch.chdir(tmp_path)
     _set_admin_password(monkeypatch, None)
 
     response = client.post("/admin/database/reset", json={"password": "anything"})
