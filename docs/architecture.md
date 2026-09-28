@@ -1159,6 +1159,24 @@ note unconditionally. Neither changes what the strategy selector offers,
 the result stats shown, or how capacity diagnostics/warnings/assignments
 are displayed.
 
+### Validation (Milestone 13)
+
+`tests/seating/test_anti_cheating_validation.py` and one added test in
+`tests/services/test_session_seating_generation.py` are a focused
+validation suite, not a new algorithm: for a representative set of
+fixtures (2/3/5/6-course, unequal sizes, a dominant course, tiny
+courses, blocked seats, a 2x10 and a 5x8 room, a real multi-course
+session), each generates the *same* input through both
+`SequentialSeatingStrategy` and `ConstraintSeatingStrategy` and compares
+same-course spatial adjacency with `quality_metrics.evaluate_seating_quality`.
+This confirms the deterministic heuristic behaves as intended across
+realistic shapes — it does **not** establish or claim mathematical
+optimality, and no test asserts a universal percentage improvement:
+actual effectiveness depends on room topology, course size distribution,
+blocked seats, and any hard constraints in play, and a highly unequal or
+capacity-constrained fixture may show a smaller (though still verified
+non-negative) improvement than a balanced one.
+
 ## Physical seat map (Milestone 12, frontend visualization only)
 
 `components/seating/SeatMap.tsx` renders the room-by-room physical grid

@@ -562,3 +562,118 @@ def test_session_generation_reports_usable_capacity_shortage_caused_by_blocking(
     assert outcome.physical_capacity_shortage is False  # 19 <= 20
     assert outcome.usable_capacity_shortage is True  # 19 > 17
     assert outcome.generation.total_unassigned == 2
+
+
+# --- Phase 13: anti-cheating validation, real session path -----------------
+
+
+def test_session_anti_cheating_preserves_provenance_and_reduces_adjacency(db_session: Session) -> None:
+    """Three courses (PHY101=8, CHEM101=7, MATH101=5) genuinely sharing
+    one 4x5=20-seat room through the real SeatingService.generate_session()
+    path — not a hand-built strategy call. Generates once with each
+    registered strategy name and verifies:
+    - every assignment's exam_id still correctly resolves to the exam
+      the seated student actually registered for (session course
+      provenance survives the anti-cheating reordering), and
+    - the constraint strategy's same-course spatial adjacency is lower
+      than sequential's, using the same pure metric
+      (evaluate_seating_quality) the rest of this suite uses — proving
+      course-based anti-cheating is genuinely active on the real,
+      DB-backed session path, not just in the pure strategy tests."""
+    from app.seating.quality_metrics import evaluate_seating_quality
+    from app.seating.topology import RectangularRoomTopology, SeatAssignmentCandidate
+
+    course_phy = SqlAlchemyCourseRepository(db_session).add(Course(id=None, code="PHY101", name="Physics I"))
+    course_chem = SqlAlchemyCourseRepository(db_session).add(
+        Course(id=None, code="CHEM101", name="Chemistry I")
+    )
+    course_math = SqlAlchemyCourseRepository(db_session).add(
+        Course(id=None, code="MATH101", name="Calculus I")
+    )
+    exam_phy = SqlAlchemyExamRepository(db_session).add(
+        Exam(id=None, course_id=course_phy.id, exam_date=DATE, time_slot=TIME_SLOT, expected_student_count=8)
+    )
+    exam_chem = SqlAlchemyExamRepository(db_session).add(
+        Exam(id=None, course_id=course_chem.id, exam_date=DATE, time_slot=TIME_SLOT, expected_student_count=7)
+    )
+    exam_math = SqlAlchemyExamRepository(db_session).add(
+        Exam(id=None, course_id=course_math.id, exam_date=DATE, time_slot=TIME_SLOT, expected_student_count=5)
+    )
+    shared_room = SqlAlchemyRoomRepository(db_session).add(
+        Room(id=None, code="401", capacity=20, rows=4, columns=5)
+    )
+    exam_room_repo = SqlAlchemyExamRoomRepository(db_session)
+    exam_room_repo.add(ExamRoom(id=None, exam_id=exam_phy.id, room_id=shared_room.id, allocated_students=8))
+    exam_room_repo.add(ExamRoom(id=None, exam_id=exam_chem.id, room_id=shared_room.id, allocated_students=7))
+    exam_room_repo.add(ExamRoom(id=None, exam_id=exam_math.id, room_id=shared_room.id, allocated_students=5))
+
+    student_repo = SqlAlchemyStudentRepository(db_session)
+    registration_repo = SqlAlchemyRegistrationRepository(db_session)
+    exam_by_prefix = {
+        "P": (exam_phy, course_phy),
+        "C": (exam_chem, course_chem),
+        "M": (exam_math, course_math),
+    }
+    counts = {"P": 8, "C": 7, "M": 5}
+    for prefix, count in counts.items():
+        _, course = exam_by_prefix[prefix]
+        for i in range(1, count + 1):
+            student = student_repo.add(
+                Student(id=None, student_number=f"{prefix}{i:03d}", full_name=f"{prefix} {i}")
+            )
+            registration_repo.add(Registration(id=None, student_id=student.id, course_id=course.id))
+    db_session.commit()
+
+    exam_ids = [exam_phy.id, exam_chem.id, exam_math.id]
+    session = _session_service(db_session).create_session(exam_ids)
+    db_session.commit()
+    service = _seating_service(db_session)
+
+    constraint_outcome = service.generate_session(session.id, strategy_name="constraint")
+    db_session.commit()
+    sequential_outcome = service.generate_session(session.id, strategy_name="sequential")
+    db_session.commit()
+
+    assignment_repo = SqlAlchemySeatAssignmentRepository(db_session)
+    constraint_assignments = assignment_repo.list_by_generation(constraint_outcome.generation.id)
+    sequential_assignments = assignment_repo.list_by_generation(sequential_outcome.generation.id)
+    assert len(constraint_assignments) == 20
+    assert len(sequential_assignments) == 20
+
+    # Provenance: every assignment's exam_id must match the course the
+    # seated student actually registered for (recoverable from the
+    # student_number prefix this test itself assigned).
+    for assignment in constraint_assignments:
+        student = student_repo.get(assignment.student_id)
+        assert student is not None
+        expected_exam, _ = exam_by_prefix[student.student_number[0]]
+        assert assignment.exam_id == expected_exam.id
+
+    # Spatial comparison: build the student_id -> course_id mapping this
+    # test itself knows to be true, and measure both generations with the
+    # same pure metric the rest of this suite uses.
+    student_course_ids: dict[int, int] = {}
+    for assignment in constraint_assignments:
+        student = student_repo.get(assignment.student_id)
+        assert student is not None
+        _, course = exam_by_prefix[student.student_number[0]]
+        student_course_ids[assignment.student_id] = course.id
+
+    topology = RectangularRoomTopology(room_id=shared_room.id, rows=4, columns=5)
+    topologies = {shared_room.id: topology}
+
+    def _as_candidates(assignments) -> list[SeatAssignmentCandidate]:
+        return [
+            SeatAssignmentCandidate(
+                student_id=a.student_id, position=topology.position_for_seat(a.seat_number)
+            )
+            for a in assignments
+        ]
+
+    constraint_quality = evaluate_seating_quality(
+        _as_candidates(constraint_assignments), student_course_ids, topologies
+    )
+    sequential_quality = evaluate_seating_quality(
+        _as_candidates(sequential_assignments), student_course_ids, topologies
+    )
+    assert constraint_quality.same_course_adjacent_pairs < sequential_quality.same_course_adjacent_pairs
