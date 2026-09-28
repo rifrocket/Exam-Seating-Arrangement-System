@@ -19,7 +19,7 @@ from app.db.repositories import (
     SqlAlchemyStudentRepository,
 )
 from app.db.session import get_db_session
-from app.reports import render_ranges_report, render_seating_report
+from app.reports import render_ranges_report, render_seat_map_report, render_seating_report
 from app.services.reports import EmptyGenerationError, GenerationNotFoundError, ReportService
 
 logger = logging.getLogger(__name__)
@@ -67,6 +67,27 @@ def get_seating_report(
         raise HTTPException(status_code=500, detail="Failed to generate the seating report PDF.") from exc
 
     return _pdf_response(pdf_bytes, f"seating-generation-{generation_id}.pdf")
+
+
+@router.get("/seating/generations/{generation_id}/reports/seat-map")
+def get_seat_map_report(
+    generation_id: int,
+    service: ReportService = Depends(_report_service),
+) -> Response:
+    try:
+        data = service.build_seat_map_report_data(generation_id)
+    except GenerationNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except EmptyGenerationError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    try:
+        pdf_bytes = render_seat_map_report(data)
+    except Exception as exc:
+        logger.exception("Failed to render seat-map report for generation %s", generation_id)
+        raise HTTPException(status_code=500, detail="Failed to generate the seat-map report PDF.") from exc
+
+    return _pdf_response(pdf_bytes, f"seat-map-generation-{generation_id}.pdf")
 
 
 @router.get("/seating/generations/{generation_id}/reports/ranges")

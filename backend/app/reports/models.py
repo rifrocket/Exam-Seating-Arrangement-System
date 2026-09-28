@@ -35,6 +35,45 @@ class SeatingReportData:
 
 
 @dataclass(frozen=True)
+class SeatMapReportSeat:
+    """One physical seat's state for the seat-map report — mirrors the
+    three states the frontend SeatMap.tsx already renders (occupied /
+    empty / blocked), computed from the exact same topology data, not
+    re-derived from assignment order."""
+
+    seat_number: int
+    row: int
+    column: int
+    state: str  # "occupied" | "empty" | "blocked"
+    course_code: str | None = None
+    student_number: str | None = None
+    student_name: str | None = None
+
+
+@dataclass(frozen=True)
+class SeatMapReportRoom:
+    room_code: str
+    # Both None when the room has no configured topology (rows/columns)
+    # — matches SeatMap.tsx's own fallback for that case; `seats` is then
+    # empty and the renderer shows a short text note instead of a grid.
+    rows: int | None
+    columns: int | None
+    seats: list[SeatMapReportSeat]  # one entry per physical seat, row-major
+
+
+@dataclass(frozen=True)
+class SeatMapReportData:
+    course_code: str
+    course_name: str
+    exam_date: str
+    time_slot: str
+    generation_id: int
+    strategy_name: str
+    status: str
+    rooms: list[SeatMapReportRoom]  # in the exam's canonical room order
+
+
+@dataclass(frozen=True)
 class RangeReportRow:
     room_code: str
     start_student_number: str

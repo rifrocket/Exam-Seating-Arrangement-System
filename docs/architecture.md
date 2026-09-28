@@ -1207,6 +1207,35 @@ This is visualization-only: nothing is clickable, editable, or
 persisted, and no seating decision is made or changed here — it reads
 the same finished assignments the table and PDF reports already read.
 
+### Physical seat-map PDF (Milestone 14)
+
+`GET /seating/generations/{generation_id}/reports/seat-map` (alongside
+the existing `.../reports/seating` and `.../reports/ranges`) is the
+printable counterpart to `SeatMap.tsx` — one grid per room, generated
+straight from the same room-topology and assignment data the frontend
+reads, never a screenshot of the React component. `ReportService.build_seat_map_report_data`
+reuses `RepositoryRoomTopologyProvider` (the same production topology
+resolution `SeatingService` itself uses) to place every physical seat —
+occupied, empty, or blocked — at its real row/column, then
+`app/reports/seat_map_report.py` (a ReportLab renderer, following the
+existing seating/ranges renderers' conventions) draws it as a `Table`.
+Blocked seats get a shaded background as a supplementary cue; course is
+always shown as text in the cell, since the PDF may be printed in
+grayscale. A room with more than 6 columns switches the whole document
+to a landscape page so a wide room (e.g. 2x10) never overflows; a room
+with no configured topology gets a short text note instead of a grid,
+matching `SeatMap.tsx`'s own fallback for that case.
+
+Building this exposed one genuine pre-existing defect (now fixed, and
+covered by a regression test): `ReportService._load()` built a session's
+`room_order` by concatenating each exam's own room list without
+deduplicating, so a room shared by every exam in a session (the
+multi-course case this whole feature exists for) was rendered — and its
+full seat list repeated — once per sharing exam in all three report
+types, not once. It now dedupes by room_id, first-appearance order,
+matching the same idiom `_merge_shared_room_allocations` already uses
+for the seating algorithm itself.
+
 ## Persistence boundary
 
 - SQLite via SQLAlchemy 2.0 declarative models (`app/db/models.py`).

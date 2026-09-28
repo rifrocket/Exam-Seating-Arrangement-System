@@ -14,11 +14,17 @@ Milestone 9: a generation now belongs to either one Exam or one
 ExaminationSession (never both — see SeatingGeneration's own
 __post_init__). `_load()` branches on which, but produces the exact same
 (course_code, course_name, exam_date, time_slot, room_order) shape either
-way, so `build_seating_report_data`/`build_range_report_data` — and the
-ReportLab renderers in app/reports/, which are untouched — don't need to
-know which kind of generation they're looking at. For a session, multiple
-courses are joined into one display string (e.g. "CS101, MATH101") rather
-than inventing a new report layout.
+way, so `build_seating_report_data`/`build_range_report_data`/
+`build_seat_map_report_data` — and the ReportLab renderers in
+app/reports/ — don't need to know which kind of generation they're
+looking at. For a session, multiple courses are joined into one display
+string (e.g. "CS101, MATH101") rather than inventing a new report layout.
+
+Milestone 14: `build_seat_map_report_data` reuses the same
+`RepositoryRoomTopologyProvider` production seating generation itself
+uses to resolve each room's physical layout — the report's grid is
+never reconstructed from assignment order, so it always matches what
+`components/seating/SeatMap.tsx` shows for the same generation.
 """
 
 from app.domain import Course, Exam, SeatAssignment, SeatingGeneration
@@ -28,6 +34,9 @@ from app.reports.models import (
     SeatingReportData,
     SeatingReportRoom,
     SeatingReportRow,
+    SeatMapReportData,
+    SeatMapReportRoom,
+    SeatMapReportSeat,
 )
 from app.repositories.course_repository import CourseRepository
 from app.repositories.exam_repository import ExamRepository
@@ -37,7 +46,9 @@ from app.repositories.room_repository import RoomRepository
 from app.repositories.seat_assignment_repository import SeatAssignmentRepository
 from app.repositories.seating_generation_repository import SeatingGenerationRepository
 from app.repositories.student_repository import StudentRepository
+from app.seating.topology_provider import RoomTopologyMismatchError, RoomTopologyMissingError
 from app.services.reports.records import EmptyGenerationError, GenerationNotFoundError
+from app.services.seating_generation.room_topology_provider import RepositoryRoomTopologyProvider
 
 
 class ReportService:
@@ -87,6 +98,96 @@ class ReportService:
             rooms.append(SeatingReportRoom(room_code=room_code, rows=rows))
 
         return SeatingReportData(
+            course_code=header.course_code,
+            course_name=header.course_name,
+            exam_date=header.exam_date,
+            time_slot=header.time_slot,
+            generation_id=generation_id,
+            strategy_name=generation.strategy_name,
+            status=generation.status.value,
+            rooms=rooms,
+        )
+
+    def build_seat_map_report_data(self, generation_id: int) -> SeatMapReportData:
+        """The physical-grid counterpart to `build_seating_report_data`:
+        every physical seat (occupied/empty/blocked), not just the
+        occupied ones, using the room's own topology — the same
+        `RepositoryRoomTopologyProvider` production seating generation
+        itself uses, never a re-derivation from assignment order. A room
+        with no configured topology (valid, e.g. a sequential-only exam)
+        gets an empty `seats` list; the renderer shows a short note
+        instead of a grid for that room, the same fallback
+        `components/seating/SeatMap.tsx` already shows in that case."""
+        generation, assignments, header, room_order = self._load(generation_id)
+
+        # Batch-resolved once per unique exam, same pattern the
+        # /assignments endpoint already uses — a session spans several
+        # exams/courses, but never more than a handful.
+        course_code_by_exam_id: dict[int, str] = {}
+        for exam_id in {a.exam_id for a in assignments}:
+            exam = self._exams.get(exam_id)
+            assert exam is not None
+            course = self._courses.get(exam.course_id)
+            assert course is not None
+            course_code_by_exam_id[exam_id] = course.code
+
+        assignments_by_room: dict[int, list[SeatAssignment]] = {}
+        for assignment in assignments:
+            assignments_by_room.setdefault(assignment.room_id, []).append(assignment)
+
+        topology_provider = RepositoryRoomTopologyProvider(self._rooms)
+        rooms: list[SeatMapReportRoom] = []
+        for room_id, room_code in room_order:
+            room_assignments = assignments_by_room.get(room_id)
+            if not room_assignments:
+                continue  # a scheduled room with zero seated students this run
+
+            room = self._rooms.get(room_id)
+            assert room is not None
+            assignment_by_seat_number = {a.seat_number: a for a in room_assignments}
+
+            try:
+                topology = topology_provider.get_topology(
+                    room_id=room_id, room_code=room_code, capacity=room.capacity
+                )
+            except (RoomTopologyMissingError, RoomTopologyMismatchError):
+                rooms.append(SeatMapReportRoom(room_code=room_code, rows=None, columns=None, seats=[]))
+                continue
+
+            seats: list[SeatMapReportSeat] = []
+            for position in topology.all_positions():
+                assignment = assignment_by_seat_number.get(position.seat_number)
+                if not position.available:
+                    state = "blocked"
+                elif assignment is not None:
+                    state = "occupied"
+                else:
+                    state = "empty"
+
+                course_code = student_number = student_name = None
+                if assignment is not None:
+                    student = self._students.get(assignment.student_id)
+                    assert student is not None
+                    student_number = student.student_number
+                    student_name = student.full_name
+                    course_code = course_code_by_exam_id[assignment.exam_id]
+
+                seats.append(
+                    SeatMapReportSeat(
+                        seat_number=position.seat_number,
+                        row=position.row,
+                        column=position.column,
+                        state=state,
+                        course_code=course_code,
+                        student_number=student_number,
+                        student_name=student_name,
+                    )
+                )
+            rooms.append(
+                SeatMapReportRoom(room_code=room_code, rows=room.rows, columns=room.columns, seats=seats)
+            )
+
+        return SeatMapReportData(
             course_code=header.course_code,
             course_name=header.course_name,
             exam_date=header.exam_date,
@@ -181,11 +282,23 @@ class ReportService:
                 exam_date=examination_session.exam_date.isoformat(),
                 time_slot=examination_session.time_slot,
             )
-            room_order = [
-                room
-                for exam_id in examination_session.exam_ids
-                for room in self._room_order_for_exam(exam_id)
-            ]
+            # A room shared by two or more of this session's exams (see
+            # ConflictingRoomAllocationError's docstring) must appear
+            # exactly once here, not once per sharing exam — otherwise
+            # every report type built from this room_order would render
+            # that room's full seat list N times over. Same
+            # first-appearance-wins dedup idiom
+            # `_merge_shared_room_allocations` already uses for the
+            # seating algorithm itself.
+            seen_room_ids: set[int] = set()
+            room_order = []
+            for exam_id in examination_session.exam_ids:
+                for room in self._room_order_for_exam(exam_id):
+                    room_id, _room_code = room
+                    if room_id in seen_room_ids:
+                        continue
+                    seen_room_ids.add(room_id)
+                    room_order.append(room)
 
         return generation, assignments, header, room_order
 

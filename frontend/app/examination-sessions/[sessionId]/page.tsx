@@ -24,6 +24,7 @@ import {
   fetchSessionGenerations,
   generateSessionSeating,
   rangesReportUrl,
+  seatMapReportUrl,
   seatingReportUrl,
 } from "@/lib/api";
 
@@ -273,6 +274,14 @@ export default function ExaminationSessionDetailPage() {
                       >
                         ID Range PDF
                       </LinkButton>
+                      <LinkButton
+                        href={seatMapReportUrl(latest.id)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        icon={<FileDown className="h-3.5 w-3.5" />}
+                      >
+                        Seat Map PDF
+                      </LinkButton>
                     </div>
                   )}
 
@@ -349,6 +358,14 @@ export default function ExaminationSessionDetailPage() {
                                   size="sm"
                                 >
                                   [Ranges]
+                                </LinkButton>
+                                <LinkButton
+                                  href={seatMapReportUrl(generation.id)}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  size="sm"
+                                >
+                                  [Seat Map]
                                 </LinkButton>
                               </>
                             )}

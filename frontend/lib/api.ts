@@ -432,3 +432,7 @@ export function seatingReportUrl(generationId: number): string {
 export function rangesReportUrl(generationId: number): string {
   return `${API_BASE_URL}/seating/generations/${generationId}/reports/ranges`;
 }
+
+export function seatMapReportUrl(generationId: number): string {
+  return `${API_BASE_URL}/seating/generations/${generationId}/reports/seat-map`;
+}
