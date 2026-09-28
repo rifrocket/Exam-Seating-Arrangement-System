@@ -46,9 +46,13 @@ class SeatingQualityReport:
     same_course_diagonal_pairs: int
     same_course_pair_count: int
     # room_id -> row/column index -> course_id -> count of students of
-    # that course in that row/column of that room.
-    row_distribution: dict[int, dict[int, dict[int, int]]] = field(default_factory=dict)
-    column_distribution: dict[int, dict[int, dict[int, int]]] = field(default_factory=dict)
+    # that course in that row/column of that room. course_id is `None`
+    # for a student missing from `student_course_ids` — grouped under its
+    # own bucket rather than silently dropped or crashing, since this is
+    # a general-purpose measurement helper, not a production code path
+    # with a guaranteed-complete mapping.
+    row_distribution: dict[int, dict[int, dict[int | None, int]]] = field(default_factory=dict)
+    column_distribution: dict[int, dict[int, dict[int | None, int]]] = field(default_factory=dict)
 
 
 def evaluate_seating_quality(
@@ -60,8 +64,8 @@ def evaluate_seating_quality(
     `SeatAssignmentCandidate`s — student_id + `SeatPosition`), not a
     candidate being considered. `topologies` is keyed by room_id, the
     same shape `ConstraintSeatingStrategy` already builds internally."""
-    row_distribution: dict[int, dict[int, dict[int, int]]] = {}
-    column_distribution: dict[int, dict[int, dict[int, int]]] = {}
+    row_distribution: dict[int, dict[int, dict[int | None, int]]] = {}
+    column_distribution: dict[int, dict[int, dict[int | None, int]]] = {}
     for entry in assignments:
         course_id = student_course_ids.get(entry.student_id)
         position = entry.position

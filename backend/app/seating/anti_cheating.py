@@ -91,6 +91,7 @@ def order_students_for_placement(
     course-count branching, no assumption of equal sizes anywhere."""
     groups: dict[int, list[Student]] = {}
     for student in students:
+        assert student.id is not None
         course_id = student_course_ids[student.id]
         groups.setdefault(course_id, []).append(student)
 

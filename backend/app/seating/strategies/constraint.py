@@ -256,8 +256,11 @@ class ConstraintSeatingStrategy(SeatingStrategy):
         # out of the anti-cheating default entirely and runs the original,
         # unmodified boolean hard/soft evaluation — this is what keeps
         # every existing constraint-model test byte-for-byte unchanged.
-        using_default_constraint_set = self._constraint_set is None
-        if using_default_constraint_set:
+        # (Branching directly on `self._constraint_set is None`, rather
+        # than on a separately-named boolean computed from it, is what
+        # lets mypy narrow `self._constraint_set` to non-None in the
+        # `else` below.)
+        if self._constraint_set is None:
             constraint_set = ConstraintSet()
             if self._student_course_ids is not None:
                 student_course_ids = dict(self._student_course_ids)
@@ -290,7 +293,6 @@ class ConstraintSeatingStrategy(SeatingStrategy):
         for student in placement_order:
             assert student.id is not None
             had_remaining_seats = len(remaining_seats) > 0
-            course_id = student_course_ids.get(student.id)
 
             best_candidate: SeatAssignmentCandidate | None = None
             best_index: int | None = None
@@ -300,12 +302,24 @@ class ConstraintSeatingStrategy(SeatingStrategy):
                 evaluation = evaluate_constraints(constraint_set, [*placed, tentative])
                 if not evaluation.satisfied:
                     continue  # a hard constraint rejects this seat outright
-                if anti_cheating_enabled:
-                    score = same_course_penalty(
-                        seat, course_id, placed, student_course_ids, topologies[seat.room_id]
+                # `student_course_ids[student.id]` (not `.get()`) is safe
+                # here: in the `anti_cheating_enabled` branch it always
+                # covers every student in `placement_order` (see this
+                # module's docstring) — and using `.get()` instead would
+                # let a genuinely missing mapping silently compare as
+                # "same course" against any other student also missing
+                # one, rather than failing loudly on that data problem.
+                score = (
+                    same_course_penalty(
+                        seat,
+                        student_course_ids[student.id],
+                        placed,
+                        student_course_ids,
+                        topologies[seat.room_id],
                     )
-                else:
-                    score = float(len(evaluation.soft_violations))
+                    if anti_cheating_enabled
+                    else float(len(evaluation.soft_violations))
+                )
                 if best_score is None or score < best_score:
                     best_candidate, best_index, best_score = tentative, index, score
                     if score == 0:

@@ -47,7 +47,8 @@ class _FixedTopologyProvider(RoomTopologyProvider):
 
 def _students(count: int, start: int = 1) -> list[Student]:
     return [
-        Student(id=i, student_number=str(1000 + i), full_name=f"Student {i}") for i in range(start, start + count)
+        Student(id=i, student_number=str(1000 + i), full_name=f"Student {i}")
+        for i in range(start, start + count)
     ]
 
 
@@ -199,7 +200,9 @@ def test_two_course_separation() -> None:
     assert len(seat_numbers) == len(set(seat_numbers))
     assert {mapping[a.student_id] for a in result.assignments} == {100, 200}
 
-    real_quality = evaluate_seating_quality(_real_candidates(result.assignments, topology), mapping, {1: topology})
+    real_quality = evaluate_seating_quality(
+        _real_candidates(result.assignments, topology), mapping, {1: topology}
+    )
     naive_quality = evaluate_seating_quality(
         _naive_course_blocked_candidates(topology, students, mapping), mapping, {1: topology}
     )
@@ -225,7 +228,9 @@ def test_three_course_separation() -> None:
     assert len(seat_keys) == 20
     assert {mapping[a.student_id] for a in result.assignments} == {100, 200, 300}
 
-    real_quality = evaluate_seating_quality(_real_candidates(result.assignments, topology), mapping, {1: topology})
+    real_quality = evaluate_seating_quality(
+        _real_candidates(result.assignments, topology), mapping, {1: topology}
+    )
     naive_quality = evaluate_seating_quality(
         _naive_course_blocked_candidates(topology, students, mapping), mapping, {1: topology}
     )
@@ -251,7 +256,9 @@ def test_four_course_separation() -> None:
     assert len(student_ids) == 25
     assert {mapping[a.student_id] for a in result.assignments} == {100, 200, 300, 400}
 
-    real_quality = evaluate_seating_quality(_real_candidates(result.assignments, topology), mapping, {1: topology})
+    real_quality = evaluate_seating_quality(
+        _real_candidates(result.assignments, topology), mapping, {1: topology}
+    )
     naive_quality = evaluate_seating_quality(
         _naive_course_blocked_candidates(topology, students, mapping), mapping, {1: topology}
     )
@@ -279,7 +286,9 @@ def test_five_course_separation() -> None:
     seat_keys = {a.seat_number for a in result.assignments}
     assert len(seat_keys) == 20
 
-    real_quality = evaluate_seating_quality(_real_candidates(result.assignments, topology), mapping, {1: topology})
+    real_quality = evaluate_seating_quality(
+        _real_candidates(result.assignments, topology), mapping, {1: topology}
+    )
     naive_quality = evaluate_seating_quality(
         _naive_course_blocked_candidates(topology, students, mapping), mapping, {1: topology}
     )
@@ -303,7 +312,67 @@ def test_six_course_separation_with_no_special_casing() -> None:
     seat_keys = {a.seat_number for a in result.assignments}
     assert len(seat_keys) == 18
 
-    real_quality = evaluate_seating_quality(_real_candidates(result.assignments, topology), mapping, {1: topology})
+    real_quality = evaluate_seating_quality(
+        _real_candidates(result.assignments, topology), mapping, {1: topology}
+    )
+    naive_quality = evaluate_seating_quality(
+        _naive_course_blocked_candidates(topology, students, mapping), mapping, {1: topology}
+    )
+    assert real_quality.same_course_adjacent_pairs < naive_quality.same_course_adjacent_pairs
+
+
+def test_non_square_wide_room_2x10() -> None:
+    """Phase 11.1 review item 7: a genuinely non-square, wide topology
+    (2 rows x 10 columns — every seat's own row holds up to 9 other
+    seats) is the shape most likely to expose an issue in the same-row
+    concentration term, since it can accumulate across far more same-
+    course neighbors per row than a squarer room ever would. Three
+    courses, 20 seats exactly."""
+    topology = RectangularRoomTopology(room_id=1, rows=2, columns=10)
+    provider = _FixedTopologyProvider({1: topology})
+    mapping = _course_mapping(8, 7, 5)
+    students = _students(20)
+    room_allocations = [RoomAllocation(room_id=1, room_code="X", allocated_students=20, capacity=20)]
+    strategy = ConstraintSeatingStrategy(topology_provider=provider, student_course_ids=mapping)
+
+    result = strategy.generate(EXAM, students, room_allocations)
+
+    assert result.assigned_student_count == 20
+    assert {mapping[a.student_id] for a in result.assignments} == {100, 200, 300}
+    seat_keys = {a.seat_number for a in result.assignments}
+    assert len(seat_keys) == 20
+
+    real_quality = evaluate_seating_quality(
+        _real_candidates(result.assignments, topology), mapping, {1: topology}
+    )
+    naive_quality = evaluate_seating_quality(
+        _naive_course_blocked_candidates(topology, students, mapping), mapping, {1: topology}
+    )
+    assert real_quality.same_course_adjacent_pairs < naive_quality.same_course_adjacent_pairs
+
+    second = strategy.generate(EXAM, students, room_allocations)
+    assert second.assignments == result.assignments
+
+
+def test_non_square_room_5x8() -> None:
+    """A second non-square shape (5 rows x 8 columns, 40 seats) — proves
+    the algorithm isn't tuned to any single room ratio."""
+    topology = RectangularRoomTopology(room_id=1, rows=5, columns=8)
+    provider = _FixedTopologyProvider({1: topology})
+    mapping = _course_mapping(15, 15, 10)
+    students = _students(40)
+    room_allocations = [RoomAllocation(room_id=1, room_code="X", allocated_students=40, capacity=40)]
+    strategy = ConstraintSeatingStrategy(topology_provider=provider, student_course_ids=mapping)
+
+    result = strategy.generate(EXAM, students, room_allocations)
+
+    assert result.assigned_student_count == 40
+    seat_keys = {a.seat_number for a in result.assignments}
+    assert len(seat_keys) == 40
+
+    real_quality = evaluate_seating_quality(
+        _real_candidates(result.assignments, topology), mapping, {1: topology}
+    )
     naive_quality = evaluate_seating_quality(
         _naive_course_blocked_candidates(topology, students, mapping), mapping, {1: topology}
     )
@@ -326,7 +395,9 @@ def test_unequal_course_sizes_are_distributed_not_clustered() -> None:
     seat_keys = {a.seat_number for a in result.assignments}
     assert len(seat_keys) == 20
 
-    real_quality = evaluate_seating_quality(_real_candidates(result.assignments, topology), mapping, {1: topology})
+    real_quality = evaluate_seating_quality(
+        _real_candidates(result.assignments, topology), mapping, {1: topology}
+    )
     naive_quality = evaluate_seating_quality(
         _naive_course_blocked_candidates(topology, students, mapping), mapping, {1: topology}
     )
@@ -357,7 +428,9 @@ def test_blocked_seats_respected_during_course_separation() -> None:
     assert seat_numbers.isdisjoint({7, 13, 19})
     assert len(seat_numbers) == 22
 
-    real_quality = evaluate_seating_quality(_real_candidates(result.assignments, topology), mapping, {1: topology})
+    real_quality = evaluate_seating_quality(
+        _real_candidates(result.assignments, topology), mapping, {1: topology}
+    )
     naive_quality = evaluate_seating_quality(
         _naive_course_blocked_candidates(topology, students, mapping), mapping, {1: topology}
     )
