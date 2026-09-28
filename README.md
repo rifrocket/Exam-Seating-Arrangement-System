@@ -10,30 +10,42 @@ This project is a Python-based system designed to automate the process of genera
 
 ## Setup and Running
 
-Requires the backend's virtual environment (`backend/.venv`, with
-dependencies from `backend/pyproject.toml`) and the frontend's
-dependencies (`frontend/node_modules`, via `npm install`) to already be
-set up once, the normal way for each stack. `make` commands below only
-manage *running* the two services, not installing their dependencies.
-
 ### Initial setup
 
 ```bash
 make setup
 ```
 
-Interactively asks for the backend port, frontend port, admin username,
-and admin password (input hidden, confirmed, rejected if empty), then
-writes:
+On a fresh clone, this first provisions what's needed to run at all:
 
-- `backend/.env` — `BACKEND_HOST`, `BACKEND_PORT`, `APP_ADMIN_USERNAME`,
-  `APP_ADMIN_PASSWORD`, and `APP_CORS_ORIGINS` (derived from the chosen
-  frontend port, so the backend actually accepts requests from it).
+- `backend/.venv` — created (via `uv venv` if `uv` is on PATH, else
+  `python3 -m venv`) if missing, then `backend/pyproject.toml`'s
+  dependencies (including its `dev` extra) are installed/updated into it.
+- `frontend/node_modules` — installed/updated via `npm install`.
+
+(Already-provisioned dependencies are left alone beyond that
+install/update pass — re-running `make setup` is safe and fast.)
+
+It then interactively asks for the **environment** (`development` or
+`production`), backend port, frontend port, admin username, and admin
+password (input hidden, confirmed, rejected if empty), and writes:
+
+- `backend/.env` — `APP_ENVIRONMENT`, `BACKEND_HOST`, `BACKEND_PORT`,
+  `APP_ADMIN_USERNAME`, `APP_ADMIN_PASSWORD`, and `APP_CORS_ORIGINS`
+  (derived from the chosen frontend port, so the backend actually
+  accepts requests from it).
 - `frontend/.env.local` — `FRONTEND_HOST`, `FRONTEND_PORT`,
   `NEXT_PUBLIC_API_URL` (derived from the chosen backend port),
   `ADMIN_USERNAME`, `ADMIN_PASSWORD`.
 
-Both files hold secrets and are **never committed** — only
+`BACKEND_HOST`'s own default depends on the environment you choose, the
+*first* time it's set: `127.0.0.1` (loopback-only) for `development`,
+`0.0.0.0` (every interface — needed for an actual server/VM to be
+reachable at all) for `production`. Once a value exists, re-running
+`make setup` always preserves it, even if you pick a different
+environment on a later run.
+
+Both env files hold secrets and are **never committed** — only
 `backend/.env.example`/`frontend/.env.example` (safe templates, no real
 values) are tracked in git. Re-running `make setup` preserves any
 unrelated settings already in either file and only updates the values

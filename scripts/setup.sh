@@ -1,18 +1,21 @@
 #!/usr/bin/env bash
-# make setup — interactively configures backend/.env and
-# frontend/.env.local: backend port, frontend port, admin username,
-# admin password, and the derived NEXT_PUBLIC_API_URL/APP_CORS_ORIGINS
-# that let the two actually talk to each other. Never overwrites unrelated
-# existing keys in either file.
+# make setup — provisions backend/.venv + frontend/node_modules if
+# missing, then interactively configures backend/.env and
+# frontend/.env.local: environment mode, backend port, frontend port,
+# admin username, admin password, and the derived
+# NEXT_PUBLIC_API_URL/APP_CORS_ORIGINS that let the two actually talk to
+# each other. Never overwrites unrelated existing keys in either file.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=./lib.sh
 source "$SCRIPT_DIR/lib.sh"
 
-BACKEND_ENV="$ROOT_DIR/backend/.env"
-FRONTEND_ENV="$ROOT_DIR/frontend/.env.local"
-BACKEND_ENV_EXAMPLE="$ROOT_DIR/backend/.env.example"
-FRONTEND_ENV_EXAMPLE="$ROOT_DIR/frontend/.env.example"
+BACKEND_DIR="$ROOT_DIR/backend"
+FRONTEND_DIR="$ROOT_DIR/frontend"
+BACKEND_ENV="$BACKEND_DIR/.env"
+FRONTEND_ENV="$FRONTEND_DIR/.env.local"
+BACKEND_ENV_EXAMPLE="$BACKEND_DIR/.env.example"
+FRONTEND_ENV_EXAMPLE="$FRONTEND_DIR/.env.example"
 
 # set_kv <file> <KEY> <value>
 # Replaces an existing KEY=... line in place, or appends one — every
@@ -34,19 +37,75 @@ set_kv() {
   mv "$tmp" "$file"
 }
 
+has_key() {
+  local file="$1" key="$2"
+  [[ -f "$file" ]] && grep -qE "^${key}=" "$file" 2>/dev/null
+}
+
 is_valid_port() {
   [[ "$1" =~ ^[0-9]+$ ]] && (( 10#$1 >= 1 && 10#$1 <= 65535 ))
 }
 
 echo "Exam Seating Arrangement System — setup"
 echo "========================================"
-echo "Configuring backend/.env and frontend/.env.local."
 echo
 
-# Seed each file from its own .env.example the first time, so unrelated
-# defaults (APP_DATABASE_URL, AUTH_SECRET placeholder, ...) already exist
-# and this script only has to manage the values it's actually responsible
-# for. An already-existing file is never replaced wholesale.
+# --- 1. Provision dependencies (backend venv, frontend node_modules) ------
+#
+# A fresh clone has neither — `make start`/`make start-pm2` fail with a
+# plain "not found" otherwise, on any machine that hasn't already set
+# these up by hand.
+
+echo "Checking backend virtual environment (backend/.venv)..."
+if [[ ! -x "$BACKEND_DIR/.venv/bin/python" ]]; then
+  echo "Creating backend/.venv..."
+  if command -v uv >/dev/null 2>&1; then
+    (cd "$BACKEND_DIR" && uv venv .venv)
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 -m venv "$BACKEND_DIR/.venv"
+  else
+    echo "Neither 'uv' nor 'python3' was found on PATH — install Python 3.11+" >&2
+    echo "(https://www.python.org/downloads/) or uv (https://docs.astral.sh/uv/)," >&2
+    echo "then re-run 'make setup'." >&2
+    exit 1
+  fi
+fi
+
+echo "Installing backend dependencies..."
+if command -v uv >/dev/null 2>&1; then
+  (cd "$BACKEND_DIR" && uv pip install --python .venv/bin/python -e ".[dev]" --quiet)
+else
+  "$BACKEND_DIR/.venv/bin/pip" install --quiet --upgrade pip
+  (cd "$BACKEND_DIR" && "$BACKEND_DIR/.venv/bin/pip" install --quiet -e ".[dev]")
+fi
+
+echo "Checking frontend dependencies (frontend/node_modules)..."
+if ! command -v npm >/dev/null 2>&1; then
+  echo "npm was not found on PATH — install Node.js (https://nodejs.org/) first," >&2
+  echo "then re-run 'make setup'." >&2
+  exit 1
+fi
+(cd "$FRONTEND_DIR" && npm install --no-audit --no-fund --quiet)
+
+echo "Dependencies ready."
+echo
+
+# --- 2. Interactive configuration -----------------------------------------
+
+# Captured *before* the .env.example seeding below, specifically so the
+# BACKEND_HOST default logic further down can tell "this key came from a
+# real prior setup" apart from "this key is just .env.example's own
+# placeholder default, copied in moments ago" — .env.example itself
+# ships with a hardcoded BACKEND_HOST=127.0.0.1 line, which would
+# otherwise make every fresh setup look "already configured."
+backend_env_pre_existed=false
+[[ -f "$BACKEND_ENV" ]] && backend_env_pre_existed=true
+
+# Seed each env file from its own .env.example the first time, so
+# unrelated defaults (APP_DATABASE_URL, AUTH_SECRET placeholder, ...)
+# already exist and this script only has to manage the values it's
+# actually responsible for. An already-existing file is never replaced
+# wholesale.
 if [[ ! -f "$BACKEND_ENV" && -f "$BACKEND_ENV_EXAMPLE" ]]; then
   cp "$BACKEND_ENV_EXAMPLE" "$BACKEND_ENV"
 fi
@@ -54,10 +113,39 @@ if [[ ! -f "$FRONTEND_ENV" && -f "$FRONTEND_ENV_EXAMPLE" ]]; then
   cp "$FRONTEND_ENV_EXAMPLE" "$FRONTEND_ENV"
 fi
 
+default_environment="$(get_env_value "$BACKEND_ENV" "APP_ENVIRONMENT" "development")"
+while true; do
+  read -r -p "Environment (development/production) [$default_environment]: " app_environment
+  app_environment="${app_environment:-$default_environment}"
+  app_environment="$(printf '%s' "$app_environment" | tr '[:upper:]' '[:lower:]')"
+  case "$app_environment" in
+    development | production) break ;;
+    *) echo "Please enter 'development' or 'production'." ;;
+  esac
+done
+
 default_backend_port="$(get_env_value "$BACKEND_ENV" "BACKEND_PORT" "8000")"
 default_frontend_port="$(get_env_value "$FRONTEND_ENV" "FRONTEND_PORT" "3000")"
 default_admin_username="$(get_env_value "$BACKEND_ENV" "APP_ADMIN_USERNAME" "admin")"
-default_backend_host="$(get_env_value "$BACKEND_ENV" "BACKEND_HOST" "127.0.0.1")"
+
+# BACKEND_HOST's sensible default depends on the chosen environment —
+# loopback-only is the safer default for local development, but a real
+# production deployment (e.g. an actual server/VM) needs to bind every
+# interface to be reachable at all. Only applied on a genuinely first-time
+# setup (backend/.env didn't exist before this run) — a value already
+# present from an *earlier* setup is always preserved, never silently
+# changed out from under a re-run. `backend_env_pre_existed` (not
+# `has_key` here) is what makes this distinction correctly: by this point
+# BACKEND_HOST *always* has a value (from .env.example's own seeded
+# placeholder, if nothing else), so checking key-presence alone could
+# never tell a real prior setup apart from a brand-new file.
+if [[ "$backend_env_pre_existed" == "true" ]] && has_key "$BACKEND_ENV" "BACKEND_HOST"; then
+  default_backend_host="$(get_env_value "$BACKEND_ENV" "BACKEND_HOST" "127.0.0.1")"
+elif [[ "$app_environment" == "production" ]]; then
+  default_backend_host="0.0.0.0"
+else
+  default_backend_host="127.0.0.1"
+fi
 default_frontend_host="$(get_env_value "$FRONTEND_ENV" "FRONTEND_HOST" "0.0.0.0")"
 
 while true; do
@@ -110,6 +198,7 @@ done
 api_url="http://localhost:${backend_port}"
 cors_origins="[\"http://localhost:${frontend_port}\", \"http://127.0.0.1:${frontend_port}\"]"
 
+set_kv "$BACKEND_ENV" "APP_ENVIRONMENT" "$app_environment"
 set_kv "$BACKEND_ENV" "BACKEND_HOST" "$default_backend_host"
 set_kv "$BACKEND_ENV" "BACKEND_PORT" "$backend_port"
 set_kv "$BACKEND_ENV" "APP_ADMIN_USERNAME" "$admin_username"
@@ -138,8 +227,8 @@ fi
 unset admin_password admin_password_confirm
 
 echo
-echo "Configuration written:"
-echo "  backend/.env         (BACKEND_HOST, BACKEND_PORT, APP_ADMIN_USERNAME, APP_ADMIN_PASSWORD, APP_CORS_ORIGINS)"
+echo "Configuration written (environment: $app_environment):"
+echo "  backend/.env         (APP_ENVIRONMENT, BACKEND_HOST, BACKEND_PORT, APP_ADMIN_USERNAME, APP_ADMIN_PASSWORD, APP_CORS_ORIGINS)"
 echo "  frontend/.env.local  (FRONTEND_HOST, FRONTEND_PORT, NEXT_PUBLIC_API_URL, ADMIN_USERNAME, ADMIN_PASSWORD)"
 echo
 echo "Neither file is committed to git (see .gitignore)."
